@@ -1,0 +1,7 @@
+{
+  "name": "ClassMic",
+  "description": "A simple real-time wireless microphone web application connecting phone microphone to laptop receiver via WebRTC.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
