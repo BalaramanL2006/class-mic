@@ -4,12 +4,15 @@ let socket = null;
 
 export function getSocket() {
   if (!socket) {
-    // Connect to current host
+    // Connect dynamically to the current host (works with any LAN IP, e.g. 192.168.10.76:3000)
     socket = io(window.location.origin, {
       transports: ['websocket', 'polling'],
       autoConnect: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 3000,
+      timeout: 10000
     });
 
     socket.on('connect', () => {
@@ -31,6 +34,16 @@ export function joinRoom(roomId, role) {
     s.once('connect', () => {
       s.emit('join-room', { roomId, role });
     });
+  }
+}
+
+export function reconnectSocket() {
+  if (socket) {
+    if (!socket.connected) {
+      socket.connect();
+    }
+  } else {
+    getSocket();
   }
 }
 

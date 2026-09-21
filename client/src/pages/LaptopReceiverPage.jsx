@@ -1,69 +1,146 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Volume2, VolumeX, Copy, Check, Mic } from 'lucide-react';
-import AudioVisualizer from '../components/AudioVisualizer.jsx';
+import QRCode from 'qrcode';
+import {
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
+  Copy,
+  Check,
+  ArrowLeft,
+  Wifi,
+  Shield,
+  Radio,
+  Sliders,
+  Speaker,
+  Users,
+  UserX,
+  Activity
+} from 'lucide-react';
 import { getSocket, joinRoom, disconnectSocket } from '../services/socket.js';
 import { setupReceiverAudioMixer } from '../webrtc/audio.js';
 import { createReceiverPeer } from '../webrtc/peer.js';
 
-export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
-  // Initialize from deployed origin if available
-  const [phoneUrl, setPhoneUrl] = useState(() => {
-    if (typeof window !== 'undefined' && window.location?.origin) {
-      const origin = window.location.origin;
-      if (origin.startsWith('https://') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
-        return `${origin}/?role=phone&room=${encodeURIComponent(roomId)}`;
-      }
-    }
-    return '';
-  });
+export default function LaptopReceiverPage({ roomId = 'local-mic', onBack, onStop }) {
+  const [phoneUrl, setPhoneUrl] = useState('');
+  const [lanIp, setLanIp] = useState('192.168.10.76');
+  const [port, setPort] = useState(window.location.port || '3000');
+  const [protocol, setProtocol] = useState(window.location.protocol.replace(':', '') || 'https');
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState('');
   const [isCopied, setIsCopied] = useState(false);
-
-  // Phone connection count & list
-  const [phoneCount, setPhoneCount] = useState(0);
   const [phonesList, setPhonesList] = useState([]);
-  const [activeMicPhoneId, setActiveMicPhoneId] = useState(null);
-  const [activePhoneName, setActivePhoneName] = useState('');
+  const [phoneCount, setPhoneCount] = useState(0);
+  const [activeCount, setActiveCount] = useState(0);
 
-  // Audio output controls
-  const [volume, setVolume] = useState(1.0);
-  const [isMuted, setIsMuted] = useState(false);
-  const [waveformData, setWaveformData] = useState([]);
+  // Master Volume & Audio
+  const [masterVolume, setMasterVolume] = useState(1.0);
+  const [isMasterMuted, setIsMasterMuted] = useState(false);
+  const [waveformData, setWaveformData] = useState(new Array(16).fill(0));
+  const [phoneLevels, setPhoneLevels] = useState({});
+  const [phoneVolumes, setPhoneVolumes] = useState({}); // phoneId -> volume (0.0 - 1.5)
+  const [phoneMutes, setPhoneMutes] = useState({}); // phoneId -> boolean
   const [audioBlocked, setAudioBlocked] = useState(false);
 
   const socketRef = useRef(null);
-  const peersRef = useRef(new Map()); // phoneId -> RTCPeerConnection wrapper
-  const earlyCandidatesRef = useRef(new Map()); // phoneId -> RTCIceCandidate[]
+  const peersRef = useRef(new Map()); // phoneId -> peer object
+  const earlyCandidatesRef = useRef(new Map()); // phoneId -> candidate[]
   const audioMixerRef = useRef(null);
   const audioElementRef = useRef(null);
 
-  // Fetch deployed public HTTPS application URL from server
+  // Fetch LAN IP from server or fallback to current hostname
   useEffect(() => {
     let isMounted = true;
 
-    fetch(`/api/network-info?room=${encodeURIComponent(roomId)}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (!isMounted) return;
-        if (data && data.phoneUrl) {
-          setPhoneUrl(data.phoneUrl);
-        }
-      })
-      .catch((err) => {
-        console.warn('Network info fetch error:', err);
-      });
+    async function fetchNetworkInfo() {
+      try {
+        const res = await fetch('/api/network-info');
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted && data) {
+            const detectedIp = data.lanIp || window.location.hostname;
+            const detectedPort = data.port ? String(data.port) : window.location.port || '3000';
+            const detectedProto = data.protocol
+              ? data.protocol.replace(':', '')
+              : window.location.protocol.replace(':', '') || 'http';
 
-    // Also fallback to browser origin if public HTTPS
-    if (typeof window !== 'undefined' && window.location?.origin) {
-      const origin = window.location.origin;
-      if (origin.startsWith('https://') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
-        setPhoneUrl(`${origin}/?role=phone&room=${encodeURIComponent(roomId)}`);
+            setLanIp(detectedIp);
+            setPort(detectedPort);
+            setProtocol(detectedProto);
+
+            if (data.sharedUrl || data.phoneUrl) {
+              setPhoneUrl(data.sharedUrl || data.phoneUrl);
+            } else {
+              const portSuffix = detectedPort && detectedPort !== '80' && detectedPort !== '443' ? `:${detectedPort}` : '';
+              const generatedUrl = `${detectedProto}://${detectedIp}${portSuffix}`;
+              setPhoneUrl(generatedUrl);
+            }
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Network info fetch error:', err);
+      }
+
+      // Fallback
+      if (isMounted) {
+        const host = window.location.hostname || '192.168.10.76';
+        const p = window.location.port && window.location.port !== '80' && window.location.port !== '443'
+          ? `:${window.location.port}`
+          : ':3000';
+        const proto = window.location.protocol || 'http:';
+        const url = `${proto}//${host}${p}`;
+        setPhoneUrl(url);
       }
     }
+
+    fetchNetworkInfo();
 
     return () => {
       isMounted = false;
     };
   }, [roomId]);
+
+  // Generate QR code whenever phoneUrl changes
+  useEffect(() => {
+    if (!phoneUrl) return;
+    QRCode.toDataURL(phoneUrl, {
+      width: 220,
+      margin: 1.5,
+      color: {
+        dark: '#020617',
+        light: '#ffffff'
+      }
+    })
+      .then((url) => {
+        setQrCodeDataUrl(url);
+      })
+      .catch((err) => {
+        console.warn('QR code generation error:', err);
+      });
+  }, [phoneUrl]);
+
+  // Initialize Web Audio Mixer
+  useEffect(() => {
+    if (!audioMixerRef.current) {
+      audioMixerRef.current = setupReceiverAudioMixer({
+        onWaveformData: (bars) => {
+          setWaveformData(bars);
+        },
+        onPhoneLevels: (levels) => {
+          setPhoneLevels(levels);
+        }
+      });
+      audioMixerRef.current.setMasterVolume(masterVolume);
+      audioMixerRef.current.setMasterMute(isMasterMuted);
+    }
+
+    return () => {
+      if (audioMixerRef.current) {
+        audioMixerRef.current.cleanup();
+        audioMixerRef.current = null;
+      }
+    };
+  }, []);
 
   // Setup Socket.IO receiver signaling
   useEffect(() => {
@@ -79,15 +156,19 @@ export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
       const count = typeof state.count === 'number' ? state.count : 0;
       setPhoneCount(count);
       setPhonesList(state.phones || []);
-      setActiveMicPhoneId(state.activeMicPhoneId || null);
-      setActivePhoneName(state.activePhoneName || '');
+      setActiveCount(typeof state.activeCount === 'number' ? state.activeCount : 0);
 
-      if (audioMixerRef.current) {
-        audioMixerRef.current.setActivePhone(state.activeMicPhoneId);
-      }
-
-      if (!state.activeMicPhoneId) {
-        setWaveformData([]);
+      // Initialize volume state for new phones if not present
+      if (state.phones) {
+        setPhoneVolumes((prev) => {
+          const next = { ...prev };
+          state.phones.forEach((p) => {
+            if (next[p.id] === undefined) {
+              next[p.id] = 1.0;
+            }
+          });
+          return next;
+        });
       }
     }
 
@@ -109,6 +190,7 @@ export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
     async function handleOffer({ phoneId, sdp }) {
       if (!phoneId) return;
 
+      // Clean up previous peer if existing for this phone
       if (peersRef.current.has(phoneId)) {
         try {
           peersRef.current.get(phoneId).close();
@@ -116,29 +198,30 @@ export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
         peersRef.current.delete(phoneId);
       }
 
-      if (!audioMixerRef.current) {
-        audioMixerRef.current = setupReceiverAudioMixer((bars) => {
-          setWaveformData(bars);
-        });
-        audioMixerRef.current.setVolume(volume);
-        audioMixerRef.current.setMute(isMuted);
+      // Ensure audio mixer is initialized and resumed
+      if (audioMixerRef.current) {
+        audioMixerRef.current.resume().catch(() => {});
       }
 
       const peer = createReceiverPeer({
         onTrack: (remoteStream) => {
+          console.log(`[ClassMic Receiver] Audio stream received for phone: ${phoneId}`);
+
+          // Primary audio path: Route into Web Audio API multi-channel mixer
+          if (audioMixerRef.current) {
+            const currentVol = phoneVolumes[phoneId] !== undefined ? phoneVolumes[phoneId] : 1.0;
+            audioMixerRef.current.addStream(phoneId, remoteStream, currentVol);
+            audioMixerRef.current.setMasterVolume(masterVolume);
+            audioMixerRef.current.setMasterMute(isMasterMuted);
+          }
+
+          // Also attach to hidden audio element to guarantee OS audio output activation
           if (audioElementRef.current) {
             audioElementRef.current.srcObject = remoteStream;
             audioElementRef.current.play().catch((err) => {
-              console.warn('Autoplay prevented:', err);
+              console.warn('Autoplay prevented by browser:', err);
               setAudioBlocked(true);
             });
-          }
-
-          if (audioMixerRef.current) {
-            audioMixerRef.current.addStream(phoneId, remoteStream);
-            audioMixerRef.current.setVolume(volume);
-            audioMixerRef.current.setMute(isMuted);
-            audioMixerRef.current.setActivePhone(activeMicPhoneId);
           }
         },
         onIceCandidate: (candidate) => {
@@ -148,13 +231,13 @@ export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
           });
         },
         onStateChange: (state) => {
-          console.log(`[ClassMic Receiver] Peer ${phoneId} state:`, state);
+          console.log(`[ClassMic Receiver] Phone ${phoneId} state:`, state);
         }
       });
 
       peersRef.current.set(phoneId, peer);
 
-      // Drain any early ICE candidates that arrived before peer was ready
+      // Drain any queued ICE candidates for this phone
       if (earlyCandidatesRef.current.has(phoneId)) {
         const queued = earlyCandidatesRef.current.get(phoneId) || [];
         earlyCandidatesRef.current.delete(phoneId);
@@ -184,7 +267,7 @@ export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
           console.warn('Error adding ICE candidate:', err);
         }
       } else {
-        // Queue candidate until offer handler sets up the peer
+        // Queue candidate until offer arrives
         if (!earlyCandidatesRef.current.has(phoneId)) {
           earlyCandidatesRef.current.set(phoneId, []);
         }
@@ -209,344 +292,558 @@ export default function LaptopReceiverPage({ roomId = 'default', onBack }) {
       socket.off('phone-left', handlePhoneLeft);
       socket.off('webrtc:offer', handleOffer);
       socket.off('webrtc:ice-candidate', handleIceCandidate);
-    };
-  }, [roomId, volume, isMuted]);
 
-  // Clean up on unmount
-  useEffect(() => {
-    return () => {
-      cleanupAudioAndPeers();
+      // Close all peers
+      peersRef.current.forEach((peer) => {
+        try { peer.close(); } catch (_) {}
+      });
+      peersRef.current.clear();
+      earlyCandidatesRef.current.clear();
       disconnectSocket();
     };
-  }, [roomId]);
+  }, [roomId, masterVolume, isMasterMuted]);
 
-  function cleanupAudioAndPeers() {
-    peersRef.current.forEach((peer) => {
-      try {
-        peer.close();
-      } catch (_) {}
-    });
-    peersRef.current.clear();
+  // Handle Master Volume Slider
+  function handleMasterVolumeChange(e) {
+    const val = parseFloat(e.target.value);
+    setMasterVolume(val);
+    if (audioMixerRef.current) {
+      audioMixerRef.current.setMasterVolume(val);
+    }
+  }
 
+  // Handle Master Mute Toggle
+  function handleToggleMasterMute() {
+    const nextMute = !isMasterMuted;
+    setIsMasterMuted(nextMute);
+    if (audioMixerRef.current) {
+      audioMixerRef.current.setMasterMute(nextMute);
+    }
+  }
+
+  // Handle Individual Phone Volume Slider
+  function handlePhoneVolumeChange(phoneId, val) {
+    setPhoneVolumes((prev) => ({ ...prev, [phoneId]: val }));
+    if (audioMixerRef.current) {
+      audioMixerRef.current.setPhoneVolume(phoneId, val);
+    }
+  }
+
+  // Handle Individual Phone Mute Toggle
+  function handleTogglePhoneMute(phoneId) {
+    const currentMute = Boolean(phoneMutes[phoneId]);
+    const nextMute = !currentMute;
+    setPhoneMutes((prev) => ({ ...prev, [phoneId]: nextMute }));
+    if (audioMixerRef.current) {
+      audioMixerRef.current.setPhoneMute(phoneId, nextMute);
+    }
+  }
+
+  // Remotely mute a phone
+  function handleRemoteMutePhone(phoneId) {
+    if (socketRef.current) {
+      socketRef.current.emit('receiver:mute-phone', {
+        roomId,
+        phoneId
+      });
+    }
+  }
+
+  // Remotely disconnect/kick a phone
+  function handleRemoteKickPhone(phoneId) {
+    if (socketRef.current) {
+      socketRef.current.emit('receiver:kick-phone', {
+        roomId,
+        phoneId
+      });
+    }
+    if (audioMixerRef.current) {
+      audioMixerRef.current.removeStream(phoneId);
+    }
+    if (peersRef.current.has(phoneId)) {
+      try { peersRef.current.get(phoneId).close(); } catch (_) {}
+      peersRef.current.delete(phoneId);
+    }
+  }
+
+  // Copy URL to clipboard
+  function handleCopyLink() {
+    if (!phoneUrl) return;
+    navigator.clipboard
+      .writeText(phoneUrl)
+      .then(() => {
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2500);
+      })
+      .catch(() => {
+        setIsCopied(false);
+      });
+  }
+
+  // Resume blocked audio context
+  function handleUnblockAudio() {
+    if (audioMixerRef.current) {
+      audioMixerRef.current.resume().then(() => {
+        setAudioBlocked(false);
+      });
+    }
+    if (audioElementRef.current) {
+      audioElementRef.current.play().then(() => {
+        setAudioBlocked(false);
+      }).catch(() => {});
+    }
+  }
+
+  // Stop receiver and exit
+  function handleStop() {
     if (audioMixerRef.current) {
       audioMixerRef.current.cleanup();
       audioMixerRef.current = null;
     }
-  }
-
-  // Handle Back button
-  function handleBack() {
-    cleanupAudioAndPeers();
+    peersRef.current.forEach((p) => {
+      try { p.close(); } catch (_) {}
+    });
+    peersRef.current.clear();
     disconnectSocket();
-    if (onBack) {
+    if (onStop) {
+      onStop();
+    } else if (onBack) {
       onBack();
     }
   }
 
-  // Copy Link handler
-  function handleCopyLink() {
-    if (!phoneUrl) return;
-
-    function markCopied() {
-      setIsCopied(true);
-      setTimeout(() => {
-        setIsCopied(false);
-      }, 2000);
-    }
-
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(phoneUrl)
-        .then(markCopied)
-        .catch(() => {
-          fallbackCopy(phoneUrl, markCopied);
-        });
-    } else {
-      fallbackCopy(phoneUrl, markCopied);
-    }
-  }
-
-  function fallbackCopy(text, cb) {
-    try {
-      const el = document.createElement('textarea');
-      el.value = text;
-      el.setAttribute('readonly', '');
-      el.style.position = 'absolute';
-      el.style.left = '-9999px';
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand('copy');
-      document.body.removeChild(el);
-      cb();
-    } catch (_) {}
-  }
-
-  // Unblock autoplay audio
-  function handleUnblockAudio() {
-    if (audioMixerRef.current) {
-      audioMixerRef.current.resume();
-    }
-    if (audioElementRef.current) {
-      audioElementRef.current.play().catch(() => {});
-    }
-    setAudioBlocked(false);
-  }
-
-  // Volume & Mute handlers
-  function handleVolumeChange(e) {
-    const val = parseFloat(e.target.value);
-    setVolume(val);
-    if (audioMixerRef.current) {
-      audioMixerRef.current.setVolume(val);
-    }
-  }
-
-  function handleToggleMute() {
-    const newMuted = !isMuted;
-    setIsMuted(newMuted);
-    if (audioMixerRef.current) {
-      audioMixerRef.current.setMute(newMuted);
-    }
-  }
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between max-w-xl mx-auto px-5 py-7 select-none">
-      {/* Hidden WebRTC audio element */}
-      <audio ref={audioElementRef} autoPlay playsInline className="hidden" />
+    <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6 select-none text-[#CAF0F8]">
+      {/* Hidden audio element for OS stream binding */}
+      <audio ref={audioElementRef} autoPlay playsInline style={{ display: 'none' }} />
 
-      {/* Top Bar */}
-      <div className="w-full flex items-center justify-between pb-4">
-        <button
-          id="btn-back"
-          onClick={handleBack}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 text-sm font-semibold transition cursor-pointer shadow-sm"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back</span>
-        </button>
+      {/* Top Header Bar - Professional Console Style */}
+      <header className="p-4 sm:p-5 rounded-2xl bg-[#051647] border border-[#0077B6] shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <button
+            id="btn-receiver-back"
+            onClick={handleStop}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#03045E] border border-[#0077B6] text-[#90E0EF] hover:text-[#CAF0F8] hover:border-[#00B4D8] text-xs font-semibold transition cursor-pointer shadow-sm active:scale-95"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Exit Dashboard</span>
+          </button>
 
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 text-xs font-mono">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-emerald-400 font-semibold">Receiver Ready</span>
+          <div>
+            <h1 className="text-xl sm:text-2xl font-black tracking-wide text-[#CAF0F8] flex items-center gap-2">
+              <span>CLASSMIC Receiver</span>
+              <span className="text-xs font-mono font-bold text-[#00B4D8] bg-[#03045E] border border-[#0077B6] px-2 py-0.5 rounded-md flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00B4D8] animate-pulse" />
+                <span>Online</span>
+              </span>
+            </h1>
+            <p className="text-xs text-[#90E0EF]">
+              Offline Local WiFi Audio Receiver & Multi-Mic Mixer
+            </p>
+          </div>
         </div>
-      </div>
 
-      {/* Autoplay blocked banner */}
+        {/* Room & Status Badges */}
+        <div className="flex items-center gap-2.5">
+          <div className="px-3.5 py-2 rounded-xl bg-[#03045E] border border-[#0077B6] text-xs font-mono flex items-center gap-2">
+            <Wifi className="w-3.5 h-3.5 text-[#00B4D8]" />
+            <span className="text-[#90E0EF]">Room:</span>
+            <strong className="text-[#CAF0F8]">{roomId}</strong>
+          </div>
+
+          <button
+            id="btn-stop-receiver"
+            onClick={handleStop}
+            className="px-4 py-2 rounded-xl bg-[#03045E] hover:bg-[#0077B6]/30 border border-[#0077B6] hover:border-[#00B4D8] text-[#90E0EF] hover:text-[#CAF0F8] text-xs font-bold transition cursor-pointer"
+          >
+            Stop Receiver
+          </button>
+        </div>
+      </header>
+
+      {/* Browser Autoplay Blocked Alert */}
       {audioBlocked && (
         <div
-          id="audio-blocked-alert"
-          onClick={handleUnblockAudio}
-          className="my-3 p-3.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-2xl text-center text-sm font-semibold cursor-pointer hover:bg-amber-500/20 transition flex items-center justify-center gap-2"
+          id="audio-unblock-banner"
+          className="p-4 rounded-2xl bg-[#051647] border border-[#0077B6] text-[#CAF0F8] flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md"
         >
-          <Volume2 className="w-4 h-4" />
-          <span>Click here to enable laptop speaker playback</span>
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <VolumeX className="w-5 h-5 text-[#00B4D8] shrink-0" />
+            <span>Browser paused audio playback. Click unblock to enable speakers.</span>
+          </div>
+          <button
+            id="btn-unblock-audio"
+            onClick={handleUnblockAudio}
+            className="px-4 py-2 rounded-xl bg-[#00B4D8] hover:bg-[#90E0EF] text-[#03045E] font-extrabold text-xs shadow-md transition cursor-pointer shrink-0"
+          >
+            Unblock Audio
+          </button>
         </div>
       )}
 
-      {/* Header */}
-      <div className="text-center my-4 space-y-1.5">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-1 shadow-inner shadow-emerald-950/30">
-          <Mic className="w-7 h-7" />
+      {/* Hardware Connection Routing Banner */}
+      <div className="p-4 sm:p-5 rounded-2xl bg-[#051647] border border-[#0077B6] text-xs font-mono text-[#CAF0F8] flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-[#03045E] text-[#00B4D8] border border-[#0077B6] shrink-0">
+            <Speaker className="w-4 h-4 text-[#00B4D8]" />
+          </div>
+          <div>
+            <div className="font-bold text-[#CAF0F8] text-sm">
+              Audio Routing: Laptop Audio Output
+            </div>
+            <div className="text-[#90E0EF] text-[11px] mt-0.5">
+              Connect external speakers using <strong>3.5mm AUX Cable</strong>, <strong>USB Audio</strong>, or <strong>Bluetooth</strong>.
+            </div>
+          </div>
         </div>
 
-        <h1 className="text-3xl sm:text-4xl font-extrabold tracking-wider text-white">
-          CLASSMIC
-        </h1>
-
-        <p className="text-base sm:text-lg font-semibold text-slate-300 tracking-wide">
-          Wireless Microphone Receiver
-        </p>
+        <div className="flex items-center gap-1.5 text-[10px] text-[#00B4D8] bg-[#03045E] border border-[#0077B6] px-3.5 py-1.5 rounded-xl shrink-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#00B4D8] animate-pulse" />
+          <span>Offline LAN Ready • Direct WebRTC</span>
+        </div>
       </div>
 
-      {/* Main Content Sections */}
-      <div className="space-y-5 my-3">
-        {/* Section: Connect Your Phone */}
-        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl space-y-4 text-center">
-          <h2 className="text-xl font-bold text-white tracking-wide">
-            Connect Your Phone
-          </h2>
+      {/* Main Grid: QR Code / Connection Info (Left) + Master Controls (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left Column: QR Code & URL Card (5 Cols) */}
+        <div className="lg:col-span-5 p-6 rounded-2xl bg-[#051647] border border-[#0077B6] shadow-xl space-y-4 text-center flex flex-col justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-[#CAF0F8] tracking-wide uppercase">
+              Connect Mobile Microphones
+            </h2>
+            <p className="text-xs text-[#90E0EF] mt-1">
+              Connect phone to this local WiFi and open the URL:
+            </p>
+          </div>
 
-          <p className="text-sm text-slate-300 font-medium">
-            Open this link on your phone:
-          </p>
+          {/* QR Code Container */}
+          <div className="inline-block p-3 rounded-2xl bg-white shadow-2xl mx-auto border-4 border-[#0077B6] my-2">
+            {qrCodeDataUrl ? (
+              <img
+                id="receiver-qr-code"
+                src={qrCodeDataUrl}
+                alt="Scan to open mobile microphone"
+                className="w-44 h-44 object-contain block mx-auto"
+              />
+            ) : (
+              <div className="w-44 h-44 flex items-center justify-center bg-slate-100 text-slate-500 text-xs font-mono">
+                Generating QR...
+              </div>
+            )}
+          </div>
 
-          {/* Actual Phone URL Box */}
-          <div
-            id="phone-connection-box"
-            onClick={handleCopyLink}
-            className="group relative flex items-center justify-between gap-3 p-3.5 px-4 rounded-xl bg-slate-950 border border-slate-700/80 hover:border-emerald-500/60 transition cursor-pointer"
-          >
-            <span
-              id="phone-url-text"
-              className="font-mono text-xs sm:text-sm text-emerald-400 font-semibold tracking-tight truncate select-all text-left"
-            >
-              {phoneUrl || 'Loading public URL...'}
+          {/* Scannable / Clickable URL Box */}
+          <div className="flex items-center gap-2 p-2.5 rounded-xl bg-[#03045E] border border-[#0077B6] text-left">
+            <span className="text-[11px] font-mono text-[#00B4D8] font-semibold truncate flex-1 px-1 select-all">
+              {phoneUrl}
             </span>
 
             <button
               type="button"
-              id="btn-copy-icon"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleCopyLink();
-              }}
-              className="p-2 rounded-lg bg-slate-900 text-slate-400 group-hover:text-emerald-400 group-hover:bg-slate-800 transition shrink-0"
-              title="Copy link"
+              id="btn-copy-url"
+              onClick={handleCopyLink}
+              className="p-2 rounded-lg bg-[#051647] hover:bg-[#0077B6]/40 text-[#90E0EF] hover:text-[#CAF0F8] transition shrink-0 cursor-pointer"
+              title="Copy URL to clipboard"
             >
-              {isCopied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+              {isCopied ? <Check className="w-4 h-4 text-[#00B4D8]" /> : <Copy className="w-4 h-4" />}
             </button>
           </div>
 
-          {/* Copy Link Button */}
           <button
-            id="btn-copy-link"
+            id="btn-copy-link-primary"
             onClick={handleCopyLink}
-            className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-bold text-sm shadow-md shadow-emerald-950/30 transition cursor-pointer flex items-center justify-center gap-2"
+            className="w-full py-2.5 rounded-xl bg-[#00B4D8] hover:bg-[#90E0EF] text-[#03045E] font-bold text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5 active:scale-98"
           >
             {isCopied ? (
               <>
-                <Check className="w-4 h-4" />
-                <span>✓ Copied!</span>
+                <Check className="w-4 h-4 text-[#03045E]" />
+                <span>Copied to Clipboard!</span>
               </>
             ) : (
               <>
-                <Copy className="w-4 h-4" />
-                <span>📋 Copy Link</span>
+                <Copy className="w-4 h-4 text-[#03045E]" />
+                <span>Copy Phone URL</span>
               </>
             )}
           </button>
 
-          <p className="text-xs text-slate-400 pt-0.5">
-            Open this link on any phone.
-          </p>
+          <div className="text-[11px] text-[#90E0EF] pt-1">
+            Multiple phones can join simultaneously. Each phone gets its own independent stream & volume slider.
+          </div>
         </div>
 
-        {/* Section: Connected Phones */}
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold text-white tracking-wide">
-              Connected Phones: <span id="connected-phones-count" className="text-emerald-400 font-mono">{phoneCount} / 20</span>
-            </h2>
-            <span className="px-2.5 py-0.5 rounded-full bg-slate-950 border border-slate-800 text-xs font-mono text-slate-400">
-              Max 20
-            </span>
-          </div>
-
-          <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-            {phonesList.length === 0 ? (
-              <div className="py-4 text-center text-slate-500 text-xs font-mono">
-                No phones connected yet. Open the link on up to 20 phones.
+        {/* Right Column: Master Volume & Waveform Output (7 Cols) */}
+        <div className="lg:col-span-7 flex flex-col justify-between p-6 rounded-2xl bg-[#051647] border border-[#0077B6] shadow-xl space-y-5">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-[#00B4D8]" />
+                <h2 className="text-sm font-bold text-[#CAF0F8] tracking-wide uppercase">
+                  Master Volume
+                </h2>
               </div>
-            ) : (
-              phonesList.map((phone) => (
-                <div
-                  key={phone.id}
-                  id={`phone-item-${phone.phoneIndex}`}
-                  className={`flex items-center justify-between p-2.5 px-3.5 rounded-xl border transition-all ${
-                    phone.isSpeaking
-                      ? 'bg-rose-500/10 border-rose-500/40 text-rose-200'
-                      : 'bg-slate-950 border-slate-800/80 text-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5 font-semibold text-sm">
-                    <span>{phone.name}</span>
-                    <span className="text-sm leading-none" title="Connected">🟢</span>
-                  </div>
 
-                  {phone.isSpeaking ? (
-                    <span className="text-xs font-mono font-bold text-rose-400 flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-                      SPEAKING
-                    </span>
-                  ) : (
-                    <span className="text-xs font-mono text-slate-400 font-medium">
-                      Ready
-                    </span>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Section: Active Microphone */}
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl space-y-3 text-center">
-          <h2 className="text-base font-bold text-white tracking-wide">
-            Active Microphone
-          </h2>
-
-          <div className="py-1">
-            {activeMicPhoneId ? (
-              <div
-                id="active-microphone-status"
-                className="inline-flex flex-col items-center gap-1.5 p-3 px-6 rounded-xl bg-rose-500/10 border border-rose-500/30 shadow-lg shadow-rose-950/20"
+              <span
+                id="active-mics-pill"
+                className={`text-xs font-mono font-bold px-2.5 py-1 rounded-full border ${
+                  activeCount > 0
+                    ? 'bg-[#051647] border-[#00B4D8] text-[#00B4D8] animate-pulse'
+                    : 'bg-[#03045E] border-[#0077B6] text-[#90E0EF]'
+                }`}
               >
-                <div className="flex items-center gap-2 text-white font-extrabold text-lg">
-                  <Mic className="w-5 h-5 text-rose-400" />
-                  <span>{activePhoneName || 'Phone'}</span>
-                </div>
-                <span className="text-xs font-mono uppercase tracking-widest font-bold text-rose-400 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-                  SPEAKING
+                {activeCount > 0 ? `🔴 ${activeCount} Mic Live` : 'Mic Idle'}
+              </span>
+            </div>
+
+            {/* Master Volume Slider & Mute */}
+            <div className="p-4 rounded-xl bg-[#03045E] border border-[#0077B6] space-y-3">
+              <div className="flex items-center justify-between text-xs font-mono">
+                <span className="text-[#90E0EF]">Master Volume</span>
+                <span className="text-[#00B4D8] font-bold">
+                  {isMasterMuted ? 'Muted (0%)' : `${Math.round(masterVolume * 100)}%`}
                 </span>
               </div>
-            ) : (
-              <div
-                id="idle-microphone-status"
-                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-950 border border-slate-800 text-slate-400 text-xs font-mono"
-              >
-                <Mic className="w-3.5 h-3.5 text-slate-500" />
-                <span>No active microphone</span>
+
+              <div className="flex items-center gap-3">
+                <button
+                  id="btn-master-mute"
+                  onClick={handleToggleMasterMute}
+                  className={`p-2.5 rounded-xl border transition cursor-pointer ${
+                    isMasterMuted
+                      ? 'bg-[#051647] border-[#0077B6] text-[#90E0EF]'
+                      : 'bg-[#051647] border-[#0077B6] text-[#00B4D8] hover:text-[#CAF0F8]'
+                  }`}
+                  title={isMasterMuted ? 'Unmute master' : 'Mute master'}
+                >
+                  {isMasterMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                </button>
+
+                <input
+                  id="slider-master-volume"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={isMasterMuted ? 0 : masterVolume}
+                  onChange={handleMasterVolumeChange}
+                  className="w-full h-2 rounded-lg appearance-none cursor-pointer"
+                />
               </div>
-            )}
-          </div>
-
-          {/* Audio Level Visualizer */}
-          <div className="space-y-1.5 pt-1">
-            <div className="text-xs font-mono text-slate-400">Audio Level</div>
-            <div className="max-w-md mx-auto h-10 flex items-center justify-center">
-              <AudioVisualizer
-                waveformData={waveformData}
-                isLive={Boolean(activeMicPhoneId)}
-                id="receiver-visualizer"
-              />
             </div>
           </div>
 
-          {/* Speaker Volume Slider & Mute */}
-          <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-4 text-xs font-mono">
-            <div className="flex items-center gap-2 text-slate-400">
-              <button
-                id="btn-toggle-mute"
-                onClick={handleToggleMute}
-                className={`p-1.5 rounded-lg border transition cursor-pointer ${
-                  isMuted
-                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-                }`}
-                title={isMuted ? 'Unmute' : 'Mute'}
-              >
-                {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              </button>
-              <span>Speaker Output: {isMuted ? 'Muted' : `${Math.round(volume * 100)}%`}</span>
+          {/* Master Waveform Visualizer */}
+          <div className="space-y-2 pt-2">
+            <div className="flex items-center justify-between text-xs font-mono text-[#90E0EF]">
+              <span className="flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-[#00B4D8]" />
+                <span className="text-[#CAF0F8]">Live Audio Output Spectrum</span>
+              </span>
+              <span className={activeCount > 0 ? 'text-[#00B4D8] font-bold' : 'text-[#90E0EF]'}>
+                {activeCount > 0 ? 'Streaming' : 'Waiting for speech'}
+              </span>
             </div>
 
-            <input
-              id="slider-volume"
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={isMuted ? 0 : volume}
-              onChange={handleVolumeChange}
-              className="w-28 sm:w-44 accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer"
-            />
+            {/* Waveform Bars Container using Palette */}
+            <div
+              id="waveform-bars-container"
+              className="flex items-end justify-between gap-1.5 h-24 p-2.5 rounded-xl bg-[#03045E] border border-[#0077B6]"
+            >
+              {waveformData.map((height, i) => {
+                let barColor = '#0077B6';
+                if (activeCount > 0) {
+                  if (height > 65) {
+                    barColor = '#CAF0F8';
+                  } else if (height > 30) {
+                    barColor = '#90E0EF';
+                  } else {
+                    barColor = '#00B4D8';
+                  }
+                }
+
+                return (
+                  <div
+                    key={i}
+                    className="flex-1 rounded-sm transition-all duration-75"
+                    style={{
+                      height: `${Math.max(8, height)}%`,
+                      backgroundColor: barColor,
+                      opacity: activeCount > 0 ? 0.95 : 0.25
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="text-[11px] font-mono text-[#90E0EF] text-right">
+            Connected Phones: <strong className="text-[#CAF0F8]">{phoneCount}</strong>
           </div>
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="pt-4 text-center text-xs font-mono text-slate-600 border-t border-slate-900">
-        PHONE → INTERNET → LAPTOP → SPEAKER
+      {/* Connected Mobile Phones List & Multi-Phone Controls */}
+      <div className="p-6 rounded-2xl bg-[#051647] border border-[#0077B6] shadow-xl space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-[#0077B6]">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-[#00B4D8]" />
+            <h2 className="text-sm font-bold text-[#CAF0F8] tracking-wide uppercase">
+              Connected Mobile Microphones ({phonesList.length})
+            </h2>
+          </div>
+
+          <span className="text-xs font-mono text-[#90E0EF]">
+            Independent Peer Connections
+          </span>
+        </div>
+
+        {phonesList.length === 0 ? (
+          <div
+            id="no-phones-connected"
+            className="py-12 text-center text-[#90E0EF] text-xs font-mono border border-dashed border-[#0077B6] rounded-xl"
+          >
+            No mobile microphones connected yet.
+            <br />
+            Scan the QR code or open the link from any phone on the same WiFi router.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {phonesList.map((phone) => {
+              const currentVol = phoneVolumes[phone.id] !== undefined ? phoneVolumes[phone.id] : 1.0;
+              const isMuted = Boolean(phoneMutes[phone.id]);
+              const currentLevel = phoneLevels[phone.id] || 0;
+
+              return (
+                <div
+                  key={phone.id}
+                  id={`phone-channel-${phone.id}`}
+                  className={`p-4 rounded-xl border transition-all ${
+                    phone.isSpeaking
+                      ? 'bg-[#03045E] border-[#00B4D8] shadow-[0_0_15px_rgba(0,180,216,0.25)]'
+                      : 'bg-[#03045E] border-[#0077B6]'
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    {/* Device Identity & Status */}
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`p-2.5 rounded-xl border shrink-0 ${
+                          phone.isSpeaking
+                            ? 'bg-[#051647] border-[#00B4D8] text-[#00B4D8] animate-pulse'
+                            : 'bg-[#051647] border-[#0077B6] text-[#90E0EF]'
+                        }`}
+                      >
+                        <Mic className="w-5 h-5" />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[#CAF0F8] font-bold text-sm">{phone.name}</span>
+                          {phone.shortId && (
+                            <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#051647] border border-[#0077B6] text-[#90E0EF]">
+                              #{phone.shortId}
+                            </span>
+                          )}
+                          <span className="w-2 h-2 rounded-full bg-[#00B4D8]" title="Connected" />
+                        </div>
+
+                        {/* Mic state pill */}
+                        <div className="mt-1 flex items-center gap-2">
+                          {phone.isSpeaking ? (
+                            <span className="text-[11px] font-mono font-bold text-[#00B4D8] flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-[#00B4D8] animate-ping" />
+                              LIVE (TRANSMITTING)
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-mono text-[#90E0EF]">
+                              Standby (Mic Off)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Audio Activity Meter for this specific phone */}
+                    <div className="flex-1 max-w-xs space-y-1">
+                      <div className="flex items-center justify-between text-[11px] font-mono text-[#90E0EF]">
+                        <span>Phone Activity</span>
+                        <span className={phone.isSpeaking ? 'text-[#00B4D8] font-bold' : 'text-[#90E0EF]'}>
+                          {phone.isSpeaking ? `${currentLevel}%` : '0%'}
+                        </span>
+                      </div>
+
+                      <div className="w-full h-2.5 bg-[#051647] rounded-full overflow-hidden p-0.5 border border-[#0077B6]">
+                        <div
+                          className="h-full rounded-full transition-all duration-75"
+                          style={{
+                            width: `${phone.isSpeaking ? currentLevel : 0}%`,
+                            backgroundColor:
+                              currentLevel > 65 ? '#CAF0F8' : currentLevel > 30 ? '#90E0EF' : '#00B4D8'
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Individual Volume Control & Remote Actions */}
+                    <div className="flex items-center gap-3 shrink-0">
+                      {/* Volume Slider */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          id={`btn-mute-phone-${phone.id}`}
+                          onClick={() => handleTogglePhoneMute(phone.id)}
+                          className={`p-1.5 rounded-lg border text-xs cursor-pointer transition ${
+                            isMuted
+                              ? 'bg-[#051647] border-[#0077B6] text-[#90E0EF]'
+                              : 'bg-[#051647] border-[#0077B6] text-[#00B4D8] hover:text-[#CAF0F8]'
+                          }`}
+                          title={isMuted ? 'Unmute this phone' : 'Mute this phone'}
+                        >
+                          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                        </button>
+
+                        <div className="w-20">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1.5"
+                            step="0.05"
+                            value={isMuted ? 0 : currentVol}
+                            onChange={(e) => handlePhoneVolumeChange(phone.id, parseFloat(e.target.value))}
+                            className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+                            title={`Volume: ${Math.round(currentVol * 100)}%`}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Remote Mute Button */}
+                      {phone.isSpeaking && (
+                        <button
+                          id={`btn-remote-mute-${phone.id}`}
+                          onClick={() => handleRemoteMutePhone(phone.id)}
+                          className="px-2.5 py-1 rounded-lg bg-[#051647] hover:bg-[#0077B6]/40 border border-[#0077B6] text-[#90E0EF] hover:text-[#CAF0F8] text-xs font-semibold transition cursor-pointer"
+                          title="Remotely turn off phone mic"
+                        >
+                          Mute Mic
+                        </button>
+                      )}
+
+                      {/* Disconnect Button */}
+                      <button
+                        id={`btn-kick-phone-${phone.id}`}
+                        onClick={() => handleRemoteKickPhone(phone.id)}
+                        className="p-1.5 rounded-lg bg-[#051647] hover:bg-[#0077B6]/40 border border-[#0077B6] text-[#90E0EF] hover:text-[#CAF0F8] transition cursor-pointer"
+                        title="Disconnect this phone"
+                      >
+                        <UserX className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

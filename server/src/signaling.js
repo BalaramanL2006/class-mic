@@ -1,15 +1,18 @@
 /**
- * ClassMic WebRTC Signaling & Room Management
- * Supports up to 20+ simultaneous phones and 1 laptop receiver per room.
- * Enforces single active microphone rule: only ONE phone can speak at a time.
+ * ClassMic Offline WebRTC Signaling & Room Management
+ *
+ * Fully supports MULTIPLE simultaneous phones on local WiFi (offline LAN).
+ * - Multi-phone concurrent speaking (mixed by Web Audio API on Laptop Receiver)
+ * - Independent phone connections (Phone 1, Phone 2, ... Phone N)
+ * - Direct WebRTC peer exchange (host candidates for 100% offline usage)
+ * - Remote mute & disconnect controls from the receiver
+ * - No internet, cloud, or external STUN/TURN dependencies required.
  */
 
 export function setupSignaling(io) {
-  // roomId -> {
+  // Map of roomId -> {
   //   receiverSockets: Set<string>,
-  //   phoneSockets: Map<string, { socketId: string, phoneIndex: number, joinedAt: number }>,
-  //   activeMicPhoneId: string | null,
-  //   counter: number
+  //   phoneSockets: Map<string, { socketId: string, phoneIndex: number, shortId: string, name: string, isSpeaking: boolean, joinedAt: number }>
   // }
   const rooms = new Map();
 
@@ -17,9 +20,7 @@ export function setupSignaling(io) {
     if (!rooms.has(roomId)) {
       rooms.set(roomId, {
         receiverSockets: new Set(),
-        phoneSockets: new Map(),
-        activeMicPhoneId: null,
-        counter: 0
+        phoneSockets: new Map()
       });
     }
     return rooms.get(roomId);
@@ -31,30 +32,31 @@ export function setupSignaling(io) {
       .map((p) => ({
         id: p.socketId,
         phoneIndex: p.phoneIndex,
-        name: `Phone ${p.phoneIndex}`,
-        isSpeaking: p.socketId === room.activeMicPhoneId
+        shortId: p.shortId,
+        name: p.name,
+        isSpeaking: Boolean(p.isSpeaking),
+        joinedAt: p.joinedAt
       }));
 
-    const activePhone = room.activeMicPhoneId ? room.phoneSockets.get(room.activeMicPhoneId) : null;
-    const activePhoneName = activePhone ? `Phone ${activePhone.phoneIndex}` : null;
+    const activeCount = phonesList.filter((p) => p.isSpeaking).length;
 
-    // Send to all receiver sockets
+    // Send full state to laptop receivers
     for (const receiverId of room.receiverSockets) {
       io.to(receiverId).emit('room-state', {
+        roomId,
         count: room.phoneSockets.size,
-        phones: phonesList,
-        activeMicPhoneId: room.activeMicPhoneId,
-        activePhoneName
+        activeCount,
+        phones: phonesList
       });
     }
 
-    // Send to all phone sockets
-    for (const phoneId of room.phoneSockets.keys()) {
-      io.to(phoneId).emit('room-mic-status', {
-        activeMicPhoneId: room.activeMicPhoneId,
-        activePhoneName,
-        isYouSpeaking: phoneId === room.activeMicPhoneId,
-        isOtherSpeaking: Boolean(room.activeMicPhoneId && room.activeMicPhoneId !== phoneId)
+    // Send summary to phone dashboards
+    for (const [phoneId, phone] of room.phoneSockets.entries()) {
+      io.to(phoneId).emit('room-status', {
+        roomId,
+        totalPhones: room.phoneSockets.size,
+        activeCount,
+        isYouSpeaking: Boolean(phone.isSpeaking)
       });
     }
   }
@@ -63,7 +65,8 @@ export function setupSignaling(io) {
     let currentRoomId = null;
     let currentRole = null;
 
-    socket.on('join-room', ({ roomId = 'default', role }) => {
+    // Join room (defaults to 'local-mic')
+    socket.on('join-room', ({ roomId = 'local-mic', role }) => {
       currentRoomId = roomId;
       currentRole = role;
       socket.join(roomId);
@@ -75,7 +78,7 @@ export function setupSignaling(io) {
         console.log(`[ClassMic] Laptop Receiver joined (${socket.id}). Connected phones: ${room.phoneSockets.size}`);
         broadcastRoomState(room, roomId);
       } else if (role === 'phone') {
-        // Assign the lowest available positive index for clean ordering (Phone 1, Phone 2, etc.)
+        // Assign the lowest available positive integer index (Phone 1, Phone 2, etc.)
         const usedIndices = new Set();
         for (const p of room.phoneSockets.values()) {
           usedIndices.add(p.phoneIndex);
@@ -85,77 +88,91 @@ export function setupSignaling(io) {
           phoneIndex++;
         }
 
+        const shortId = socket.id.slice(-4).toUpperCase();
+        const phoneName = `Phone ${phoneIndex}`;
+
         room.phoneSockets.set(socket.id, {
           socketId: socket.id,
           phoneIndex,
+          shortId,
+          name: phoneName,
+          isSpeaking: false,
           joinedAt: Date.now()
         });
 
-        console.log(`[ClassMic] Phone ${phoneIndex} joined (${socket.id}). Total phones: ${room.phoneSockets.size}`);
+        console.log(`[ClassMic] ${phoneName} [#${shortId}] joined (${socket.id}). Total phones: ${room.phoneSockets.size}`);
 
-        // Notify this phone of its index
         socket.emit('phone-assigned', {
           phoneIndex,
-          name: `Phone ${phoneIndex}`
+          shortId,
+          name: phoneName,
+          roomId
         });
 
         broadcastRoomState(room, roomId);
       }
     });
 
-    // Request to turn MIC ON (Enforce single active microphone)
-    socket.on('mic:request-on', ({ roomId = 'default' } = {}) => {
-      const room = rooms.get(currentRoomId || roomId);
+    // Phone toggles MIC state (ON / OFF)
+    // Multiple phones are allowed to be ON simultaneously
+    socket.on('mic:state-change', ({ roomId = 'local-mic', isSpeaking }) => {
+      const targetRoomId = currentRoomId || roomId;
+      const room = rooms.get(targetRoomId);
       if (!room) return;
 
-      if (room.activeMicPhoneId && room.activeMicPhoneId !== socket.id) {
-        // Another phone is already active!
-        const active = room.phoneSockets.get(room.activeMicPhoneId);
-        const activeName = active ? `Phone ${active.phoneIndex}` : 'Another phone';
-        socket.emit('mic:denied', {
-          reason: 'Another microphone is currently active.',
-          activePhoneName: activeName
-        });
-        return;
+      const phone = room.phoneSockets.get(socket.id);
+      if (phone) {
+        phone.isSpeaking = Boolean(isSpeaking);
+        console.log(`[ClassMic] ${phone.name} MIC state changed -> ${phone.isSpeaking ? 'ON (Speaking)' : 'OFF (Muted)'}`);
+        socket.emit('mic:acknowledged', { isSpeaking: phone.isSpeaking });
+        broadcastRoomState(room, targetRoomId);
       }
-
-      // Grant mic to this phone
-      room.activeMicPhoneId = socket.id;
-      const phoneData = room.phoneSockets.get(socket.id);
-      const phoneName = phoneData ? `Phone ${phoneData.phoneIndex}` : 'Phone';
-      console.log(`[ClassMic] Mic granted to ${phoneName} (${socket.id})`);
-
-      socket.emit('mic:granted');
-      broadcastRoomState(room, currentRoomId || roomId);
     });
 
-    // Request to turn MIC OFF
-    socket.on('mic:request-off', ({ roomId = 'default' } = {}) => {
-      const room = rooms.get(currentRoomId || roomId);
-      if (!room) return;
+    // Receiver requests to remotely mute a specific phone
+    socket.on('receiver:mute-phone', ({ roomId = 'local-mic', phoneId }) => {
+      const targetRoomId = currentRoomId || roomId;
+      const room = rooms.get(targetRoomId);
+      if (!room || !phoneId) return;
 
-      if (room.activeMicPhoneId === socket.id) {
-        console.log(`[ClassMic] Mic released by (${socket.id})`);
-        room.activeMicPhoneId = null;
+      const phone = room.phoneSockets.get(phoneId);
+      if (phone) {
+        phone.isSpeaking = false;
+        io.to(phoneId).emit('remote:muted');
+        broadcastRoomState(room, targetRoomId);
       }
+    });
 
-      socket.emit('mic:stopped');
-      broadcastRoomState(room, currentRoomId || roomId);
+    // Receiver requests to remotely disconnect a specific phone
+    socket.on('receiver:kick-phone', ({ roomId = 'local-mic', phoneId }) => {
+      const targetRoomId = currentRoomId || roomId;
+      const room = rooms.get(targetRoomId);
+      if (!room || !phoneId) return;
+
+      io.to(phoneId).emit('remote:disconnected');
+      const phoneSocket = io.sockets.sockets.get(phoneId);
+      if (phoneSocket) {
+        phoneSocket.disconnect(true);
+      }
     });
 
     // WebRTC Offer (Phone -> Laptop Receiver)
-    socket.on('webrtc:offer', ({ roomId = 'default', sdp }) => {
-      const room = rooms.get(currentRoomId || roomId);
+    socket.on('webrtc:offer', ({ roomId = 'local-mic', sdp }) => {
+      const targetRoomId = currentRoomId || roomId;
+      const room = rooms.get(targetRoomId);
       if (!room) return;
 
-      const phoneData = room.phoneSockets.get(socket.id);
-      const phoneIndex = phoneData ? phoneData.phoneIndex : 1;
+      const phone = room.phoneSockets.get(socket.id);
+      const phoneIndex = phone ? phone.phoneIndex : 1;
+      const phoneName = phone ? phone.name : `Phone ${phoneIndex}`;
+      const shortId = phone ? phone.shortId : socket.id.slice(-4).toUpperCase();
 
       for (const receiverId of room.receiverSockets) {
         io.to(receiverId).emit('webrtc:offer', {
           phoneId: socket.id,
           phoneIndex,
-          phoneName: `Phone ${phoneIndex}`,
+          phoneName,
+          shortId,
           sdp
         });
       }
@@ -170,12 +187,13 @@ export function setupSignaling(io) {
       }
     });
 
-    // WebRTC ICE Candidates
+    // WebRTC ICE Candidate relay
     socket.on('webrtc:ice-candidate', ({ targetId, candidate }) => {
       const room = rooms.get(currentRoomId);
       if (!room || !candidate) return;
 
       if (currentRole === 'phone') {
+        // Forward candidate to all connected receivers
         for (const receiverId of room.receiverSockets) {
           io.to(receiverId).emit('webrtc:ice-candidate', {
             phoneId: socket.id,
@@ -183,6 +201,7 @@ export function setupSignaling(io) {
           });
         }
       } else {
+        // Receiver forwards to specific phone
         if (targetId) {
           io.to(targetId).emit('webrtc:ice-candidate', {
             candidate
@@ -191,7 +210,7 @@ export function setupSignaling(io) {
       }
     });
 
-    // Disconnect cleanup
+    // Clean disconnection
     socket.on('disconnect', () => {
       if (!currentRoomId) return;
       const room = rooms.get(currentRoomId);
@@ -201,12 +220,10 @@ export function setupSignaling(io) {
         room.receiverSockets.delete(socket.id);
         console.log(`[ClassMic] Receiver disconnected (${socket.id})`);
       } else if (currentRole === 'phone') {
-        const wasSpeaking = room.activeMicPhoneId === socket.id;
-        if (wasSpeaking) {
-          room.activeMicPhoneId = null;
-        }
+        const phone = room.phoneSockets.get(socket.id);
+        const name = phone ? phone.name : socket.id;
 
-        // Notify receivers to close WebRTC peer for this phone
+        // Notify receivers to tear down the WebRTC peer for this phone
         for (const receiverId of room.receiverSockets) {
           io.to(receiverId).emit('phone-left', {
             phoneId: socket.id
@@ -214,7 +231,7 @@ export function setupSignaling(io) {
         }
 
         room.phoneSockets.delete(socket.id);
-        console.log(`[ClassMic] Phone disconnected (${socket.id}). Remaining: ${room.phoneSockets.size}`);
+        console.log(`[ClassMic] ${name} disconnected (${socket.id}). Remaining phones: ${room.phoneSockets.size}`);
         broadcastRoomState(room, currentRoomId);
       }
 

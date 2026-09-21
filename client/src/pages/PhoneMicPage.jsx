@@ -1,103 +1,114 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, ArrowLeft, AlertCircle } from 'lucide-react';
+import {
+  Mic,
+  MicOff,
+  ArrowLeft,
+  Wifi,
+  WifiOff,
+  RotateCw,
+  ShieldCheck,
+  AlertCircle,
+  Radio,
+  Signal
+} from 'lucide-react';
 import AudioLevelMeter from '../components/AudioLevelMeter.jsx';
-import { getSocket, joinRoom, disconnectSocket } from '../services/socket.js';
+import { getSocket, joinRoom, reconnectSocket, disconnectSocket } from '../services/socket.js';
 import { getMicrophoneStream, createAudioMeter } from '../webrtc/audio.js';
 import { createPhonePeer } from '../webrtc/peer.js';
 
-export default function PhoneMicPage({ roomId = 'default', onBack }) {
+export default function PhoneMicPage({ roomId = 'local-mic', onBack }) {
   const [isConnected, setIsConnected] = useState(false);
   const [isMicOn, setIsMicOn] = useState(false);
-  const [phoneName, setPhoneName] = useState('');
+  const [phoneName, setPhoneName] = useState('Phone');
+  const [shortId, setShortId] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
-  const [activeWarning, setActiveWarning] = useState('');
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [permissionState, setPermissionState] = useState('prompt'); // 'granted' | 'denied' | 'prompt'
+  const [peerState, setPeerState] = useState('idle'); // 'idle' | 'connecting' | 'connected' | 'disconnected'
+  const [latencyText, setLatencyText] = useState('< 5 ms');
 
   const streamRef = useRef(null);
   const peerRef = useRef(null);
   const meterCleanupRef = useRef(null);
   const socketRef = useRef(null);
+  const isMicOnRef = useRef(isMicOn);
+  isMicOnRef.current = isMicOn;
 
-  // Setup Socket.IO connection and event listeners
+  // Check microphone permission query if supported
+  useEffect(() => {
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions
+        .query({ name: 'microphone' })
+        .then((res) => {
+          setPermissionState(res.state);
+          res.onchange = () => {
+            setPermissionState(res.state);
+          };
+        })
+        .catch(() => {});
+    }
+  }, []);
+
+  // Socket connection & signaling setup
   useEffect(() => {
     const socket = getSocket();
     socketRef.current = socket;
 
     function handleConnect() {
       setIsConnected(true);
+      setIsReconnecting(false);
+      setErrorMessage('');
       joinRoom(roomId, 'phone');
+
+      // If user had mic ON before unexpected disconnection, resume peer
+      if (isMicOnRef.current && streamRef.current) {
+        startWebRtcTransmission();
+      }
     }
 
     function handleDisconnect() {
       setIsConnected(false);
-      setIsMicOn(false);
+      setPeerState('disconnected');
     }
 
-    function handlePhoneAssigned({ name }) {
-      if (name) {
-        setPhoneName(name);
-      }
-    }
-
-    function handleMicGranted() {
-      setActiveWarning('');
-      setErrorMessage('');
-      setIsMicOn(true);
-      if (streamRef.current) {
-        streamRef.current.getAudioTracks().forEach((t) => {
-          t.enabled = true;
-        });
-      }
-      sendOffer();
-    }
-
-    function handleMicDenied({ reason }) {
-      setIsMicOn(false);
-      if (streamRef.current) {
-        streamRef.current.getAudioTracks().forEach((t) => {
-          t.enabled = false;
-        });
-      }
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
-      setActiveWarning(reason || 'Another microphone is currently active.');
-      setTimeout(() => {
-        setActiveWarning('');
-      }, 4000);
-    }
-
-    function handleMicStopped() {
-      setIsMicOn(false);
-      setAudioLevel(0);
-      if (streamRef.current) {
-        streamRef.current.getAudioTracks().forEach((t) => {
-          t.enabled = false;
-        });
-      }
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
-    }
-
-    function handleRoomMicStatus({ isOtherSpeaking }) {
-      if (!isOtherSpeaking) {
-        setActiveWarning('');
+    function handlePhoneAssigned(data) {
+      if (data) {
+        if (data.name) setPhoneName(data.name);
+        if (data.shortId) setShortId(data.shortId);
       }
     }
 
     async function handleAnswer({ sdp }) {
       if (peerRef.current) {
-        await peerRef.current.handleAnswer(sdp);
+        try {
+          await peerRef.current.handleAnswer(sdp);
+          setPeerState('connected');
+        } catch (err) {
+          console.warn('[ClassMic Phone] Error applying WebRTC answer:', err);
+        }
       }
     }
 
     async function handleIceCandidate({ candidate }) {
       if (peerRef.current) {
-        await peerRef.current.addIceCandidate(candidate);
+        try {
+          await peerRef.current.addIceCandidate(candidate);
+        } catch (err) {
+          console.warn('[ClassMic Phone] Error applying ICE candidate:', err);
+        }
       }
+    }
+
+    function handleRemoteMuted() {
+      // Receiver remotely muted this microphone
+      stopMicrophoneTransmission();
+    }
+
+    function handleRemoteDisconnected() {
+      stopMicrophoneTransmission();
+      setIsConnected(false);
+      setErrorMessage('You were disconnected by the laptop receiver.');
     }
 
     if (socket.connected) {
@@ -108,48 +119,110 @@ export default function PhoneMicPage({ roomId = 'default', onBack }) {
 
     socket.on('disconnect', handleDisconnect);
     socket.on('phone-assigned', handlePhoneAssigned);
-    socket.on('mic:granted', handleMicGranted);
-    socket.on('mic:denied', handleMicDenied);
-    socket.on('mic:stopped', handleMicStopped);
-    socket.on('room-mic-status', handleRoomMicStatus);
     socket.on('webrtc:answer', handleAnswer);
     socket.on('webrtc:ice-candidate', handleIceCandidate);
+    socket.on('remote:muted', handleRemoteMuted);
+    socket.on('remote:disconnected', handleRemoteDisconnected);
 
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('phone-assigned', handlePhoneAssigned);
-      socket.off('mic:granted', handleMicGranted);
-      socket.off('mic:denied', handleMicDenied);
-      socket.off('mic:stopped', handleMicStopped);
-      socket.off('room-mic-status', handleRoomMicStatus);
       socket.off('webrtc:answer', handleAnswer);
       socket.off('webrtc:ice-candidate', handleIceCandidate);
+      socket.off('remote:muted', handleRemoteMuted);
+      socket.off('remote:disconnected', handleRemoteDisconnected);
     };
   }, [roomId]);
 
-  // Clean up WebRTC, audio, and socket on unmount
+  // Clean up on unmount
   useEffect(() => {
     return () => {
-      cleanupAudioAndPeer();
-      if (socketRef.current) {
-        try {
-          socketRef.current.emit('mic:request-off', { roomId });
-        } catch (_) {}
-      }
+      stopMicrophoneTransmission();
       disconnectSocket();
     };
   }, [roomId]);
 
-  function cleanupAudioAndPeer() {
-    if (meterCleanupRef.current) {
-      meterCleanupRef.current();
-      meterCleanupRef.current = null;
+  // Start WebRTC audio transmission to laptop
+  async function startWebRtcTransmission() {
+    try {
+      setErrorMessage('');
+      setPeerState('connecting');
+
+      // 1. Acquire low-latency microphone stream
+      const stream = await getMicrophoneStream();
+      streamRef.current = stream;
+      setPermissionState('granted');
+
+      // 2. Start volume level meter
+      if (meterCleanupRef.current) {
+        meterCleanupRef.current();
+      }
+      meterCleanupRef.current = createAudioMeter(stream, (level) => {
+        setAudioLevel(level);
+      });
+
+      // 3. Create WebRTC PeerConnection for local LAN (iceServers: [])
+      if (peerRef.current) {
+        peerRef.current.close();
+      }
+
+      const peer = createPhonePeer({
+        stream,
+        onIceCandidate: (candidate) => {
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit('webrtc:ice-candidate', { candidate });
+          }
+        },
+        onStateChange: (state) => {
+          setPeerState(state);
+        }
+      });
+
+      peerRef.current = peer;
+
+      // 4. Create and send offer over local Socket.IO
+      const offer = await peer.createOffer();
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('webrtc:offer', {
+          roomId,
+          sdp: offer
+        });
+        socketRef.current.emit('mic:state-change', {
+          roomId,
+          isSpeaking: true
+        });
+      }
+
+      setIsMicOn(true);
+    } catch (err) {
+      console.error('[ClassMic Phone] Error starting mic:', err);
+      setIsMicOn(false);
+      setPeerState('idle');
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setPermissionState('denied');
+        setErrorMessage('Microphone access blocked. Please allow mic permissions in browser settings.');
+      } else {
+        setErrorMessage(err.message || 'Could not access microphone.');
+      }
     }
-    if (peerRef.current) {
-      peerRef.current.close();
-      peerRef.current = null;
+  }
+
+  // Stop microphone audio transmission
+  function stopMicrophoneTransmission() {
+    setIsMicOn(false);
+    setAudioLevel(0);
+    setPeerState('idle');
+
+    // Notify receiver
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('mic:state-change', {
+        roomId,
+        isSpeaking: false
+      });
     }
+
+    // Stop audio tracks
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => {
         track.enabled = false;
@@ -157,233 +230,270 @@ export default function PhoneMicPage({ roomId = 'default', onBack }) {
       });
       streamRef.current = null;
     }
-  }
 
-  // Handle Back button
-  function handleBack() {
-    setIsMicOn(false);
-    cleanupAudioAndPeer();
-    if (socketRef.current) {
-      try {
-        socketRef.current.emit('mic:request-off', { roomId });
-      } catch (_) {}
+    // Stop meter
+    if (meterCleanupRef.current) {
+      meterCleanupRef.current();
+      meterCleanupRef.current = null;
     }
-    disconnectSocket();
-    if (onBack) {
-      onBack();
+
+    // Close WebRTC peer
+    if (peerRef.current) {
+      peerRef.current.close();
+      peerRef.current = null;
     }
   }
 
-  // Acquire microphone stream & initialize peer
-  async function ensureStreamAndPeer() {
-    if (streamRef.current && peerRef.current) {
-      return streamRef.current;
-    }
-
-    try {
-      setErrorMessage('');
-      const stream = await getMicrophoneStream();
-      streamRef.current = stream;
-
-      meterCleanupRef.current = createAudioMeter(stream, (level) => {
-        setAudioLevel(level);
-      });
-
-      const peer = createPhonePeer({
-        stream,
-        onIceCandidate: (candidate) => {
-          if (socketRef.current) {
-            socketRef.current.emit('webrtc:ice-candidate', {
-              candidate
-            });
-          }
-        },
-        onStateChange: (state) => {
-          console.log('[ClassMic Phone] WebRTC peer state:', state);
-        }
-      });
-      peerRef.current = peer;
-
-      return stream;
-    } catch (err) {
-      console.error('[ClassMic Phone] Microphone access error:', err);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setErrorMessage('Please allow microphone access.');
-      } else {
-        setErrorMessage('Could not access microphone.');
-      }
-      throw err;
-    }
-  }
-
-  async function sendOffer() {
-    if (!peerRef.current || !socketRef.current) return;
-    try {
-      const offer = await peerRef.current.createOffer();
-      socketRef.current.emit('webrtc:offer', {
-        roomId,
-        sdp: offer
-      });
-    } catch (err) {
-      console.error('[ClassMic Phone] Error sending offer:', err);
-    }
-  }
-
-  // Toggle Microphone ON / OFF
+  // Toggle MIC ON/OFF
   async function handleToggleMic() {
-    setErrorMessage('');
-
-    if (!isMicOn) {
-      try {
-        await ensureStreamAndPeer();
-        if (socketRef.current) {
-          socketRef.current.emit('mic:request-on', { roomId });
-        }
-      } catch (err) {
-        setIsMicOn(false);
-      }
+    if (isMicOn) {
+      stopMicrophoneTransmission();
     } else {
-      if (streamRef.current) {
-        streamRef.current.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
-      }
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
-      setIsMicOn(false);
-      setAudioLevel(0);
-      if (socketRef.current) {
-        socketRef.current.emit('mic:request-off', { roomId });
-      }
+      await startWebRtcTransmission();
     }
+  }
+
+  // Manual reconnect trigger
+  function handleManualReconnect() {
+    setIsReconnecting(true);
+    reconnectSocket();
+    setTimeout(() => {
+      setIsReconnecting(false);
+    }, 2000);
+  }
+
+  // Handle exit back to home
+  function handleBack() {
+    stopMicrophoneTransmission();
+    disconnectSocket();
+    if (onBack) onBack();
   }
 
   return (
-    <div className="flex flex-col justify-between min-h-[92vh] max-w-sm mx-auto px-5 py-6 select-none">
-      {/* Top Header with Back Button */}
-      <div className="w-full flex items-center justify-between">
+    <div className="w-full max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 select-none flex flex-col justify-between min-h-[90vh] space-y-6 text-[#CAF0F8]">
+      {/* Top Header Bar with Oceanic Glow */}
+      <header className="relative w-full flex items-center justify-between py-3 px-3 sm:px-4 rounded-2xl bg-[#051647] border border-[#0077B6] shadow-md">
+        <div className="absolute -inset-0.5 bg-gradient-to-r from-[#0077B6]/20 via-transparent to-[#00B4D8]/20 blur-lg rounded-2xl pointer-events-none" />
+
+        {/* Exit Button */}
         <button
-          id="btn-back"
+          id="btn-phone-back"
           onClick={handleBack}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 text-sm font-semibold transition cursor-pointer shadow-sm"
+          className="relative z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#03045E] border border-[#0077B6] text-[#90E0EF] hover:text-[#CAF0F8] hover:border-[#00B4D8] text-xs font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
         >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back</span>
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span>Exit</span>
         </button>
 
-        {phoneName && (
-          <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-2.5 py-1 rounded-lg">
-            {phoneName}
+        {/* Header Title & Device Pill */}
+        <div className="relative z-10 flex items-center gap-2">
+          <span className="text-base font-bold text-[#CAF0F8] tracking-wide flex items-center gap-1.5">
+            <span className="text-base">🎤</span>
+            <span>CLASSMIC</span>
           </span>
-        )}
-      </div>
-
-      {/* Centered Brand & Status */}
-      <div className="text-center my-2 space-y-2">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-1 shadow-inner">
-          <Mic className="w-7 h-7" />
+          {phoneName && (
+            <span className="hidden sm:inline-flex text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#03045E] border border-[#0077B6] text-[#90E0EF]">
+              {phoneName}
+            </span>
+          )}
         </div>
 
-        <h1 className="text-3xl font-extrabold tracking-wider text-white">
-          CLASSMIC
-        </h1>
-
-        <p className="text-sm font-medium text-slate-400">
-          Wireless Microphone
-        </p>
-
-        <div className="pt-2 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs font-mono">
-          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
-          <span className={isConnected ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
-            {isConnected ? 'Connected' : 'Connecting...'}
-          </span>
+        {/* Connection Status Right */}
+        <div className="relative z-10 flex items-center gap-2">
+          {isConnected ? (
+            <div
+              id="phone-header-status"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#03045E] border border-[#0077B6] text-xs"
+            >
+              <span className="w-2 h-2 rounded-full bg-[#00B4D8] animate-pulse" />
+              <span className="text-[#CAF0F8] font-semibold text-[11px]">Connected</span>
+            </div>
+          ) : (
+            <div
+              id="phone-header-status"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#03045E] border border-[#0077B6] text-xs"
+            >
+              <span className="w-2 h-2 rounded-full bg-[#0077B6]" />
+              <span className="text-[#90E0EF] font-semibold text-[11px]">Offline</span>
+            </div>
+          )}
         </div>
-      </div>
+      </header>
 
-      {/* Another Mic Active Warning */}
-      {activeWarning && (
+      {/* Disconnection Banner with Reconnect Action */}
+      {!isConnected && (
         <div
-          id="active-mic-warning"
-          className="my-2 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm font-medium flex items-center justify-center gap-2 text-center"
+          id="phone-disconnected-banner"
+          className="p-4 rounded-2xl bg-[#051647] border border-[#0077B6] text-[#CAF0F8] text-xs text-center space-y-2 shadow-lg"
         >
-          <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-          <span>{activeWarning}</span>
+          <div className="flex items-center justify-center gap-1.5 font-bold text-[#CAF0F8]">
+            <AlertCircle className="w-4 h-4 text-[#00B4D8] shrink-0" />
+            <span>WiFi connection lost</span>
+          </div>
+          <p className="text-[11px] text-[#90E0EF]">
+            Connect your phone to the same WiFi router as the laptop.
+          </p>
+          <button
+            id="btn-reconnect-now"
+            onClick={handleManualReconnect}
+            disabled={isReconnecting}
+            className="w-full max-w-xs mx-auto py-2 px-3 rounded-xl bg-[#00B4D8] hover:bg-[#90E0EF] text-[#03045E] font-bold text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5 active:scale-98"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${isReconnecting ? 'animate-spin' : ''}`} />
+            <span>{isReconnecting ? 'Connecting...' : 'Reconnect Now'}</span>
+          </button>
         </div>
       )}
 
-      {/* Error Banner */}
+      {/* Warning / Error Message */}
       {errorMessage && (
         <div
           id="phone-error-banner"
-          className="my-2 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-center gap-2 text-center"
+          className="p-3 rounded-2xl bg-[#051647] border border-[#0077B6] text-[#90E0EF] text-xs flex items-center justify-center gap-2 text-center"
         >
-          <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+          <AlertCircle className="w-4 h-4 shrink-0 text-[#00B4D8]" />
           <span>{errorMessage}</span>
         </div>
       )}
 
-      {/* Centered Large Mic Card */}
-      <div className="my-auto flex flex-col items-center justify-center py-4">
-        <button
-          id="btn-toggle-mic"
-          onClick={handleToggleMic}
-          disabled={!isConnected}
-          className={`relative flex flex-col items-center justify-center w-52 h-52 rounded-3xl transition-all duration-200 cursor-pointer shadow-2xl active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-2 ${
-            isMicOn
-              ? 'bg-rose-500 text-white border-rose-300 shadow-rose-500/40 ring-8 ring-rose-500/20'
-              : 'bg-slate-900 text-slate-200 border-slate-800 hover:border-slate-700 shadow-black/80'
-          }`}
-          aria-label={isMicOn ? 'Turn Microphone Off' : 'Turn Microphone On'}
-        >
-          {/* Subtle ping ring when active */}
-          {isMicOn && (
-            <div className="absolute inset-0 rounded-3xl animate-ping bg-rose-400 opacity-20 pointer-events-none" />
-          )}
+      {/* Professional Stage Deck: Large Circular Mic & Audio Equalizer */}
+      <section className="relative p-6 sm:p-8 rounded-3xl bg-[#051647] border border-[#0077B6] shadow-2xl flex flex-col items-center justify-center space-y-6 overflow-hidden">
+        <div className="absolute -inset-2 bg-gradient-to-b from-[#0077B6]/10 via-transparent to-[#00B4D8]/10 pointer-events-none" />
 
-          <Mic className={`w-16 h-16 mb-3 transition-transform ${isMicOn ? 'scale-110' : 'scale-100'}`} />
+        {/* Primary Circular Microphone Button */}
+        <div className="relative z-10 py-2">
+          <button
+            id="btn-toggle-mic"
+            onClick={handleToggleMic}
+            disabled={!isConnected}
+            className={`relative flex flex-col items-center justify-center w-52 h-52 sm:w-60 sm:h-60 rounded-full transition-all duration-300 cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+              isMicOn
+                ? 'bg-[#00B4D8] text-[#03045E] border-4 border-[#CAF0F8] mic-glow-active'
+                : 'bg-[#03045E] text-[#90E0EF] border-3 border-[#0077B6] hover:border-[#00B4D8]'
+            }`}
+            style={
+              isMicOn
+                ? { boxShadow: '0 0 35px rgba(0, 180, 216, 0.45)' }
+                : undefined
+            }
+            aria-label={isMicOn ? 'Turn Microphone Off' : 'Turn Microphone On'}
+          >
+            {isMicOn ? (
+              <Mic className="w-16 h-16 sm:w-20 sm:h-20 mb-1 text-[#03045E] transition-transform scale-105" />
+            ) : (
+              <MicOff className="w-16 h-16 sm:w-20 sm:h-20 mb-1 text-[#90E0EF] transition-transform" />
+            )}
 
-          <span className="text-xl font-extrabold tracking-wider">
-            {isMicOn ? '🔴 MIC ON' : '🎤 MIC OFF'}
-          </span>
-
-          {isMicOn && (
-            <span className="text-[11px] font-mono tracking-widest uppercase font-bold mt-1.5 text-rose-100 animate-pulse">
-              SPEAKING...
+            <span
+              className={`text-xl sm:text-2xl font-extrabold tracking-wider ${
+                isMicOn ? 'text-[#03045E]' : 'text-[#90E0EF]'
+              }`}
+            >
+              {isMicOn ? 'MIC ON' : 'MIC OFF'}
             </span>
-          )}
-        </button>
-      </div>
 
-      {/* Audio Level Meter */}
-      <div className="w-full space-y-4 pt-2">
-        <div className="space-y-1">
-          <div className="text-center text-xs font-mono text-slate-400">
-            Audio Level
-          </div>
+            <span
+              className={`text-[10px] font-mono tracking-widest uppercase font-semibold mt-1 px-2.5 py-0.5 rounded-full ${
+                isMicOn
+                  ? 'bg-[#03045E]/20 text-[#03045E]'
+                  : 'text-[#90E0EF]'
+              }`}
+            >
+              {isMicOn ? 'TRANSMITTING LIVE' : 'TAP TO SPEAK'}
+            </span>
+          </button>
+        </div>
+
+        {/* Audio Level Waveform / Equalizer */}
+        <div className="relative z-10 w-full max-w-md pt-2">
           <AudioLevelMeter level={audioLevel} isMicOn={isMicOn} id="phone-level-meter" />
         </div>
+      </section>
 
-        {/* Minimal Bottom Status Details */}
-        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-900 text-xs font-mono">
-          <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/60 text-center">
-            <div className="text-slate-500 text-[10px] uppercase">Connection</div>
-            <div className="text-emerald-400 font-bold mt-0.5 flex items-center justify-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              Connected
+      {/* Diagnostic & Connection Cards - Responsive 2-Column Grid Layout */}
+      <section className="w-full grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Receiver Status Card */}
+        <div
+          id="receiver-status-card"
+          className="flex flex-col justify-between p-4 rounded-2xl bg-[#051647] border border-[#0077B6] space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-[#03045E] border border-[#0077B6] text-[#00B4D8]">
+                <Radio className="w-4 h-4 text-[#00B4D8]" />
+              </div>
+              <span className="text-xs font-semibold text-[#CAF0F8]">💻 Receiver</span>
+            </div>
+
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isConnected ? 'bg-[#00B4D8]' : 'bg-[#0077B6]'
+                }`}
+              />
+              <span className="text-[#CAF0F8] font-medium text-[11px]">
+                {isConnected ? 'Connected' : 'Offline'}
+              </span>
             </div>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/60 text-center">
-            <div className="text-slate-500 text-[10px] uppercase">Microphone</div>
-            <div className={`font-bold mt-0.5 flex items-center justify-center gap-1.5 ${isMicOn ? 'text-emerald-400' : 'text-slate-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${isMicOn ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-              {isMicOn ? 'Active' : 'Idle'}
+          <div className="text-[11px] text-[#90E0EF] pt-1">
+            {peerState === 'connected'
+              ? 'Audio stream connected'
+              : isConnected
+              ? 'Receiver online on LAN'
+              : 'Waiting for connection'}
+          </div>
+        </div>
+
+        {/* Connection Card */}
+        <div
+          id="phone-connection-card"
+          className="p-4 rounded-2xl bg-[#051647] border border-[#0077B6] space-y-2.5 text-xs"
+        >
+          <div className="flex items-center justify-between pb-2 border-b border-[#0077B6]/60">
+            <span className="font-semibold text-[#CAF0F8]">Connection Status</span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#00B4D8]">
+              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#00B4D8]' : 'bg-[#0077B6]'}`} />
+              <span className="text-[#CAF0F8]">{isConnected ? 'Connected' : 'Disconnected'}</span>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-[11px] pt-0.5">
+            <div>
+              <div className="text-[#90E0EF]">WiFi Network</div>
+              <div className="text-[#CAF0F8] font-semibold mt-0.5 flex items-center gap-1">
+                <Wifi className="w-3 h-3 text-[#00B4D8]" />
+                <span>{isConnected ? 'Connected' : 'Not Connected'}</span>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[#90E0EF]">Device ID</div>
+              <div className="text-[#CAF0F8] font-mono font-semibold mt-0.5 truncate">
+                {phoneName} {shortId ? `#${shortId}` : ''}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[#90E0EF]">Room</div>
+              <div className="text-[#CAF0F8] font-mono font-semibold mt-0.5">
+                {roomId}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[#90E0EF]">Mic Permission</div>
+              <div className="text-[#CAF0F8] font-semibold mt-0.5 flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3 text-[#00B4D8]" />
+                <span className="capitalize">
+                  {permissionState === 'granted' ? 'Allowed' : permissionState}
+                </span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

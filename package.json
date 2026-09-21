@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node server/src/server.js",
+    "cert": "node scripts/generate-cert.js",
     "build": "vite build",
-    "start": "NODE_ENV=production node server/src/server.js",
+    "start": "node server/src/server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "node -e \"console.log('ClassMic JS validated')\""

@@ -2,28 +2,31 @@ import React from 'react';
 
 export default function StatusBadge({ status, label, id = 'status-badge' }) {
   // Determine dot color based on status
-  let dotColor = 'bg-slate-500';
+  let dotColor = 'bg-[#90E0EF]';
   let pulse = false;
 
   if (status === 'connected' || status === 'active' || status === 'ready') {
-    dotColor = 'bg-emerald-400';
+    dotColor = 'bg-[#00B4D8]';
     pulse = true;
   } else if (status === 'waiting' || status === 'connecting') {
-    dotColor = 'bg-amber-400';
+    dotColor = 'bg-[#90E0EF]';
     pulse = true;
   } else if (status === 'error' || status === 'disconnected') {
-    dotColor = 'bg-rose-500';
+    dotColor = 'bg-[#0077B6]';
   }
 
   return (
-    <div id={id} className="inline-flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-800 text-sm font-medium text-slate-200 shadow-sm">
-      <span className="relative flex h-2.5 w-2.5">
+    <div
+      id={id}
+      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#051647] border border-[#0077B6] text-xs font-medium text-[#CAF0F8] shadow-sm"
+    >
+      <span className="relative flex h-2 w-2">
         {pulse && (
           <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75`}></span>
         )}
-        <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`}></span>
+        <span className={`relative inline-flex rounded-full h-2 w-2 ${dotColor}`}></span>
       </span>
-      <span>{label}</span>
+      <span className="text-xs">{label}</span>
     </div>
   );
 }

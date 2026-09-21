@@ -1,26 +1,43 @@
 /**
- * Web Audio API utilities for ClassMic
- * Handles microphone capture, volume gain, mute control, and frequency/level analysis.
+ * Web Audio API Engine for ClassMic (Offline LAN)
+ *
+ * Handles:
+ * - Low-latency microphone capture optimized for real-time speech
+ * - Multi-phone Web Audio mixer (mixing multiple concurrent incoming phone streams)
+ * - Individual phone volume controls and per-phone audio activity meters
+ * - Master output gain and waveform visualization for laptop speakers / AUX output
  */
 
-// Request real microphone audio stream with browser enhancements
+// Request low-latency mono microphone stream for speech transmission
 export async function getMicrophoneStream() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error('Microphone access is not supported by your browser.');
   }
 
+  // Optimized for live speech over wireless LAN to external speakers
   const constraints = {
     audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      channelCount: 1, // Mono audio for speech efficiency and bandwidth
       sampleRate: 48000,
-      channelCount: 1
+      sampleSize: 16,
+      echoCancellation: false, // Low-latency raw transmission for PA / external speaker output
+      noiseSuppression: false, // Prevents software DSP delay
+      autoGainControl: true,  // Automatically balances vocal dynamics
+      latency: 0.005          // Request minimal hardware buffering
     },
     video: false
   };
 
-  return await navigator.mediaDevices.getUserMedia(constraints);
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+  // Set browser content hint to prioritize speech encoding
+  stream.getAudioTracks().forEach((track) => {
+    if ('contentHint' in track) {
+      track.contentHint = 'speech';
+    }
+  });
+
+  return stream;
 }
 
 // Create an audio level meter from a MediaStream (0 to 100 range)
@@ -36,7 +53,7 @@ export function createAudioMeter(stream, onLevel) {
     audioContext = new AudioCtx();
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.6;
+    analyser.smoothingTimeConstant = 0.4;
 
     source = audioContext.createMediaStreamSource(stream);
     source.connect(analyser);
@@ -48,16 +65,14 @@ export function createAudioMeter(stream, onLevel) {
 
       analyser.getByteFrequencyData(dataArray);
 
-      // Compute average volume level
       let sum = 0;
       for (let i = 0; i < dataArray.length; i++) {
         sum += dataArray[i];
       }
       const average = sum / dataArray.length;
-      // Normalize to 0-100 scale
       const normalized = Math.min(100, Math.round((average / 128) * 100));
 
-      onLevel(normalized);
+      if (onLevel) onLevel(normalized);
 
       animationId = requestAnimationFrame(updateMeter);
     };
@@ -79,56 +94,76 @@ export function createAudioMeter(stream, onLevel) {
   };
 }
 
-// Setup receiver Web Audio chain: Stream -> GainNode -> Destination (Speakers) & AnalyserNode
-export function setupReceiverAudioPipeline(stream, onWaveformData) {
-  const mixer = setupReceiverAudioMixer(onWaveformData);
-  if (stream) {
-    mixer.addStream('default', stream);
-  }
-  return {
-    ...mixer,
-    cleanup: () => mixer.cleanup()
-  };
-}
-
-// Multi-phone audio mixer: Multiple phone MediaStreams -> Master GainNode -> Destination & Analyser
-export function setupReceiverAudioMixer(onWaveformData) {
+/**
+ * Multi-Phone Web Audio Mixer
+ *
+ * Routes:
+ * [Phone 1 Stream] -> [Phone 1 Gain] -> [Phone 1 Analyser] ┐
+ * [Phone 2 Stream] -> [Phone 2 Gain] -> [Phone 2 Analyser] ┼─> [Master Gain] ─> [Master Analyser]
+ * [Phone N Stream] -> [Phone N Gain] -> [Phone N Analyser] ┘         │
+ *                                                                    └─> [Laptop Audio Destination / AUX / Speakers]
+ */
+export function setupReceiverAudioMixer({ onWaveformData, onPhoneLevels }) {
   let audioContext = null;
   let masterGain = null;
-  let analyser = null;
+  let masterAnalyser = null;
   let animationId = null;
   let isRunning = true;
-  const sourceNodes = new Map(); // phoneId -> { source: MediaStreamAudioSourceNode, gain: GainNode }
-  let currentActivePhoneId = null;
+
+  // phoneId -> { source: MediaStreamAudioSourceNode, gain: GainNode, analyser: AnalyserNode, volume: number, isMuted: boolean }
+  const phoneChannels = new Map();
 
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  audioContext = new AudioCtx();
+  audioContext = new AudioCtx({ latencyHint: 'interactive' });
 
   if (audioContext.state === 'suspended') {
     audioContext.resume().catch(() => {});
   }
 
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 64;
-  analyser.smoothingTimeConstant = 0.5;
-
+  // Master Gain & Analyser
   masterGain = audioContext.createGain();
   masterGain.gain.value = 1.0;
 
-  // Pipe master gain to speakers and analyser
-  masterGain.connect(audioContext.destination);
-  masterGain.connect(analyser);
+  masterAnalyser = audioContext.createAnalyser();
+  masterAnalyser.fftSize = 64;
+  masterAnalyser.smoothingTimeConstant = 0.4;
 
-  const bufferLength = analyser.frequencyBinCount;
-  const dataArray = new Uint8Array(bufferLength);
+  // Master output connects directly to audioContext.destination (Speakers / AUX / Headphones)
+  masterGain.connect(audioContext.destination);
+  masterGain.connect(masterAnalyser);
+
+  const masterDataArray = new Uint8Array(masterAnalyser.frequencyBinCount);
+  const phoneDataArray = new Uint8Array(32);
 
   const tickVisualizer = () => {
     if (!isRunning) return;
 
-    analyser.getByteFrequencyData(dataArray);
-    if (onWaveformData) {
-      const bars = Array.from(dataArray.slice(0, 16)).map((val) => Math.round((val / 255) * 100));
+    // 1. Master waveform
+    if (onWaveformData && masterAnalyser) {
+      masterAnalyser.getByteFrequencyData(masterDataArray);
+      const bars = Array.from(masterDataArray.slice(0, 16)).map((val) =>
+        Math.round((val / 255) * 100)
+      );
       onWaveformData(bars);
+    }
+
+    // 2. Per-phone audio activity levels
+    if (onPhoneLevels && phoneChannels.size > 0) {
+      const levels = {};
+      phoneChannels.forEach((channel, pId) => {
+        if (channel.isMuted) {
+          levels[pId] = 0;
+          return;
+        }
+        channel.analyser.getByteFrequencyData(phoneDataArray);
+        let sum = 0;
+        for (let i = 0; i < phoneDataArray.length; i++) {
+          sum += phoneDataArray[i];
+        }
+        const avg = sum / phoneDataArray.length;
+        levels[pId] = Math.min(100, Math.round((avg / 128) * 100));
+      });
+      onPhoneLevels(levels);
     }
 
     animationId = requestAnimationFrame(tickVisualizer);
@@ -137,71 +172,109 @@ export function setupReceiverAudioMixer(onWaveformData) {
   tickVisualizer();
 
   return {
-    addStream: (phoneId, stream) => {
+    // Add incoming phone stream to the live mixer
+    addStream: (phoneId, stream, initialVolume = 1.0) => {
       try {
         if (!audioContext || audioContext.state === 'closed') return;
-        if (sourceNodes.has(phoneId)) {
-          const old = sourceNodes.get(phoneId);
+
+        // Clean up previous instance if exists
+        if (phoneChannels.has(phoneId)) {
+          const old = phoneChannels.get(phoneId);
           try { old.source.disconnect(); } catch (_) {}
           try { old.gain.disconnect(); } catch (_) {}
+          try { old.analyser.disconnect(); } catch (_) {}
         }
+
         const source = audioContext.createMediaStreamSource(stream);
         const gain = audioContext.createGain();
-        // If active phone is set and matches, or if no active phone is set yet
-        const isAllowed = !currentActivePhoneId || currentActivePhoneId === phoneId;
-        gain.gain.setValueAtTime(isAllowed ? 1.0 : 0.0, audioContext.currentTime);
+        gain.gain.setValueAtTime(initialVolume, audioContext.currentTime);
 
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.3;
+
+        // Route: source -> gain -> analyser -> masterGain
         source.connect(gain);
+        gain.connect(analyser);
         gain.connect(masterGain);
-        sourceNodes.set(phoneId, { source, gain });
+
+        phoneChannels.set(phoneId, {
+          source,
+          gain,
+          analyser,
+          volume: initialVolume,
+          isMuted: false
+        });
+
+        console.log(`[ClassMic Mixer] Added audio channel for phone: ${phoneId}`);
       } catch (err) {
-        console.warn('[ClassMic Mixer] Failed to add stream:', err);
+        console.warn('[ClassMic Mixer] Error adding phone stream:', err);
       }
     },
-    setActivePhone: (activePhoneId) => {
-      currentActivePhoneId = activePhoneId || null;
-      if (!audioContext) return;
-      sourceNodes.forEach((node, pId) => {
-        if (!currentActivePhoneId) {
-          node.gain.gain.setValueAtTime(0, audioContext.currentTime);
-        } else if (pId === currentActivePhoneId) {
-          node.gain.gain.setValueAtTime(1.0, audioContext.currentTime);
-        } else {
-          node.gain.gain.setValueAtTime(0, audioContext.currentTime);
+
+    // Adjust individual phone volume (0.0 to 1.5)
+    setPhoneVolume: (phoneId, volume) => {
+      const channel = phoneChannels.get(phoneId);
+      if (channel && audioContext) {
+        channel.volume = volume;
+        if (!channel.isMuted) {
+          channel.gain.gain.setValueAtTime(volume, audioContext.currentTime);
         }
-      });
-    },
-    removeStream: (phoneId) => {
-      if (sourceNodes.has(phoneId)) {
-        const node = sourceNodes.get(phoneId);
-        try { node.source.disconnect(); } catch (_) {}
-        try { node.gain.disconnect(); } catch (_) {}
-        sourceNodes.delete(phoneId);
       }
     },
-    setVolume: (val) => {
+
+    // Toggle mute on a single phone
+    setPhoneMute: (phoneId, isMuted) => {
+      const channel = phoneChannels.get(phoneId);
+      if (channel && audioContext) {
+        channel.isMuted = isMuted;
+        channel.gain.gain.setValueAtTime(isMuted ? 0 : channel.volume, audioContext.currentTime);
+      }
+    },
+
+    // Remove phone stream when phone leaves
+    removeStream: (phoneId) => {
+      if (phoneChannels.has(phoneId)) {
+        const channel = phoneChannels.get(phoneId);
+        try { channel.source.disconnect(); } catch (_) {}
+        try { channel.gain.disconnect(); } catch (_) {}
+        try { channel.analyser.disconnect(); } catch (_) {}
+        phoneChannels.delete(phoneId);
+        console.log(`[ClassMic Mixer] Removed audio channel for phone: ${phoneId}`);
+      }
+    },
+
+    // Set master volume for laptop speakers / AUX (0.0 to 1.0)
+    setMasterVolume: (val) => {
       if (masterGain && audioContext) {
         masterGain.gain.setValueAtTime(val, audioContext.currentTime);
       }
     },
-    setMute: (isMuted) => {
+
+    // Toggle master mute
+    setMasterMute: (isMuted) => {
       if (masterGain && audioContext) {
-        masterGain.gain.setValueAtTime(isMuted ? 0 : 1, audioContext.currentTime);
+        masterGain.gain.setValueAtTime(isMuted ? 0 : 1.0, audioContext.currentTime);
       }
     },
+
+    // Resume suspended AudioContext (handles browser user gesture requirements)
     resume: async () => {
       if (audioContext && audioContext.state === 'suspended') {
         await audioContext.resume();
       }
     },
+
+    // Full cleanup
     cleanup: () => {
       isRunning = false;
       if (animationId) cancelAnimationFrame(animationId);
-      sourceNodes.forEach((node) => {
-        try { node.source.disconnect(); } catch (_) {}
-        try { node.gain.disconnect(); } catch (_) {}
+      phoneChannels.forEach((channel) => {
+        try { channel.source.disconnect(); } catch (_) {}
+        try { channel.gain.disconnect(); } catch (_) {}
+        try { channel.analyser.disconnect(); } catch (_) {}
       });
-      sourceNodes.clear();
+      phoneChannels.clear();
       if (masterGain) {
         try { masterGain.disconnect(); } catch (_) {}
       }

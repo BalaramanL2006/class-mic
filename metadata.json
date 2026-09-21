@@ -1,6 +1,6 @@
 {
-  "name": "ClassMic",
-  "description": "A simple real-time wireless microphone web application connecting phone microphone to laptop receiver via WebRTC.",
+  "name": "CLASSMIC",
+  "description": "Offline WiFi wireless microphone system connecting mobile phone microphones to a laptop receiver and external speakers over local WiFi without internet.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

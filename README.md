@@ -1,206 +1,236 @@
-# ClassMic
+# CLASSMIC
 
-> Turn your phone into a real-time wireless microphone for physical classrooms and presentations.
+> **Modern Offline Wireless Microphone & Multi-Mic Audio Mixer for Classrooms, Auditoriums, and Presentations**
 
 ```
-PHONE (Microphone)  ──(Wi-Fi / WebRTC)──▶  LAPTOP (Receiver)  ──▶  SPEAKER
+ ┌──────────────────────────┐          Local Wi-Fi / Hotspot         ┌──────────────────────────┐         AUX / Bluetooth / USB
+ │  Smartphone (Transmitter)│ ─────────────── WebRTC ──────────────▶ │ Laptop (Receiver / Mixer)│ ──────────────────────────────▶ External Speakers / PA
+ │    • Chrome / Safari     │       (Ultra-Low Latency Opus)         │    • Web Audio Mixer     │
+ │    • Real-time Mic Level │                                        │    • Master / Per-Mic Vol│
+ └──────────────────────────┘                                        └──────────────────────────┘
 ```
 
 ---
 
-## What is ClassMic?
+## 📌 Overview
 
-ClassMic is a simple, real-time wireless microphone web application built with **WebRTC**, **Socket.IO**, and **Node.js**.
+**CLASSMIC** transforms smartphones into high-performance, real-time wireless microphones that stream directly to a laptop receiver over a local Wi-Fi router or laptop mobile hotspot. The laptop routes and mixes the incoming audio in real time to external classroom speakers, PA systems, soundbars, or Bluetooth speakers.
 
-- **Phone = Microphone**: Captures real audio through `navigator.mediaDevices.getUserMedia()`.
-- **Laptop = Receiver**: Receives real-time peer-to-peer audio stream and plays through laptop speakers or external Bluetooth speaker.
-- **Local Network**: Operates directly over local Wi-Fi without requiring external cloud databases or accounts.
+- **100% Offline LAN Operation**: Operates directly over local Wi-Fi. No internet access, external cloud servers, or user accounts required.
+- **Multi-Microphone Support**: Multiple speakers or students can connect their phones at the same time. The laptop receiver console provides individual volume sliders, mute toggles, and live voice activity meters for each connected phone.
+- **Ultra-Low Latency Audio**: Uses WebRTC Opus audio packetization optimized for speech (10ms ptime) with Web Audio API hardware routing.
+- **Instant Pairing**: Displays a high-resolution QR code and one-click LAN URL on the laptop receiver console for instant phone connection.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Install Dependencies
+### 1. Prerequisites
+- **Node.js** v18.0.0 or higher
+- Laptop and mobile phone(s) connected to the same Wi-Fi network (or laptop hotspot)
+
+### 2. Installation
+Clone the repository and install dependencies:
 ```bash
 npm install
 ```
 
-### 2. Start the Server
+### 3. Start Development Server
 ```bash
 npm run dev
 ```
-The server starts on port `3000` and displays your laptop's local network IP address (e.g. `http://192.168.1.15:3000`).
+The server will bind to `0.0.0.0:3000` and display your local network IP (e.g., `http://192.168.1.15:3000`).
 
 ---
 
-## Local Wi-Fi Testing (Classroom Setup)
+## 🏫 Classroom & Presentation Setup
 
-Follow these exact steps to test ClassMic in a classroom:
+### Mode A: Standard Local Wi-Fi Router (Recommended)
 
-1. **Start the Node.js server on your laptop**:
+1. **Start CLASSMIC on your Laptop**:
    ```bash
    npm run dev
    ```
-2. **Connect laptop and phone to the same Wi-Fi network**.
-3. **Open the laptop receiver page**:
-   - Open your browser on the laptop: `http://localhost:3000`
-   - Click **[ LAPTOP RECEIVER ]**.
-4. **Find the laptop's local IP address**:
-   - The laptop receiver page displays your local network address (e.g. `http://192.168.1.15:3000`) along with a pairing QR code.
-5. **Open the phone microphone page**:
-   - Scan the QR code with your phone camera, OR
-   - Open mobile browser (Chrome/Safari) and type: `http://<laptop-ip>:3000/?role=phone`
-6. **Allow microphone permission**:
-   - Tap **Allow** when your browser requests microphone access.
-7. **Turn MIC ON**:
-   - Tap the large circular **🎤 MIC OFF** button.
-   - It turns emerald green and displays **🎤 MIC ON / SPEAKING...**.
-8. **Speak into the phone microphone**:
-   - Watch the audio level meter react on the phone.
-9. **Verify that the laptop receives the audio**:
-   - The laptop screen will show `🟢 Phone Connected`.
-   - The audio visualizer (`▂▅▇▆▃▅▇▃`) will dance to your voice.
-10. **Connect laptop to speaker**:
-    - Connect your laptop to external classroom speakers or a Bluetooth speaker.
-    - Adjust volume or mute anytime from the laptop receiver page.
+2. **Open the Receiver Console**:
+   - In your laptop browser, navigate to `http://localhost:3000`.
+   - Click **[ Open Receiver Console ]** (or go to `http://localhost:3000/?role=receiver`).
+3. **Connect to Speakers**:
+   - Connect your laptop to your room's speakers using a **3.5mm AUX cable**, **USB Audio interface**, or **Bluetooth**.
+4. **Connect Mobile Microphones**:
+   - Open your smartphone camera and scan the pairing QR code displayed on the laptop screen.
+   - *Alternatively*, type the displayed URL into your phone's browser (e.g., `http://192.168.1.15:3000/?role=phone`).
+5. **Grant Microphone Access & Speak**:
+   - Tap **Allow** when prompted for microphone permission.
+   - Tap the large circular **MIC OFF** button to toggle to **MIC ON / TRANSMITTING LIVE**.
+   - Speak into your phone — audio plays through the laptop speakers with real-time level monitoring.
 
 ---
 
-## Testing via Laptop Wi-Fi Hotspot (No Router Needed)
+### Mode B: Laptop Mobile Hotspot (Zero Router / Field Use)
 
-If a Wi-Fi router is not available:
+If a Wi-Fi router is unavailable or if your school network blocks device-to-device communication (client isolation):
 
 1. **Enable Mobile Hotspot on Laptop**:
-   - **Windows**: Settings → Network & Internet → Mobile Hotspot → Turn On.
+   - **Windows**: Settings → Network & Internet → Mobile Hotspot → Toggle **ON**.
    - **macOS**: System Settings → General → Sharing → Internet Sharing.
-2. **Connect Phone**:
-   - On your phone, connect to your laptop's hotspot Wi-Fi.
-3. **Open ClassMic**:
-   - On the laptop, run `npm run dev` and click **[ LAPTOP RECEIVER ]**.
-   - On the phone, scan the QR code or enter the hotspot gateway IP (e.g. `http://192.168.137.1:3000`).
-4. **Speak**:
-   - Audio streams peer-to-peer over the direct hotspot connection with ultra-low latency.
+2. **Connect Phones to Laptop Hotspot**:
+   - On the smartphones, connect to the laptop's Wi-Fi hotspot SSID.
+3. **Launch Receiver**:
+   - Start the server (`npm run dev`) and open the Receiver Console on the laptop.
+   - CLASSMIC automatically detects the hotspot network interface (e.g., `192.168.137.1`) and updates the pairing QR code.
+4. **Scan & Transmit**:
+   - Connect phone(s) via the QR code and begin speaking.
 
 ---
 
-## Project Structure
+## 🔒 Mobile Browser Microphone & HTTPS Setup
 
-```
-client/
-    src/
-        components/
-            AudioLevelMeter.jsx
-            AudioVisualizer.jsx
-            StatusBadge.jsx
-        pages/
-            HomePage.jsx
-            PhoneMicPage.jsx
-            LaptopReceiverPage.jsx
-        services/
-            socket.js
-        webrtc/
-            peer.js
-            audio.js
-        App.jsx
-        main.jsx
-        styles.css
+Modern mobile browsers (such as Google Chrome on Android) require a **Secure Context** (HTTPS or localhost) to access the microphone via `navigator.mediaDevices.getUserMedia()`. 
 
-server/
-    src/
-        server.js
-        signaling.js
-```
+CLASSMIC includes a built-in automated certificate generator using `mkcert`:
 
----
+### Generating Local Trusted Certificates
 
-## Multiple Phones Support (Classrooms & Multiple Speakers)
-
-ClassMic supports multiple phones connected to the same laptop receiver simultaneously:
-
-1. **Laptop starts ClassMic**:
-   - Start the server on your laptop with `npm run dev`.
-   - Click **[ LAPTOP RECEIVER ]**. The page displays:
-     ```
-     ClassMic Local Network
-
-     Server:
-     🟢 Running
-
-     Phone URL:
-     http://<REAL-LAN-IP>:3000/?role=phone&room=default
-
-     Connected Phones:
-     0
-     ```
-2. **Connect Multiple Phones**:
-   - **Phone 1**: Connect to the laptop's Wi-Fi or hotspot. Open the Phone URL or scan the QR code. Connected Phones updates to `1`.
-   - **Phone 2**: Connect to the same Wi-Fi/hotspot. Open the Phone URL or scan the QR code. Connected Phones updates to `2`.
-   - **Phone 3**: Connect to the same Wi-Fi/hotspot. Open the Phone URL or scan the QR code. Connected Phones updates to `3`.
-3. **Independent WebRTC Connections**:
-   - Each phone has its own isolated peer connection to the laptop receiver.
-   - Any phone can tap **Mic On** to speak through the laptop speakers.
-   - An audio mixer merges and normalizes incoming audio streams with real-time waveform visualization.
-
----
-
-## Windows Setup & Windows Firewall Configuration
-
-The server binds to `0.0.0.0` (all network interfaces) so it can receive connections from phones connected over Wi-Fi or Windows Mobile Hotspot:
-
-1. **Windows Firewall Prompt**:
-   - When you start Node.js for the first time, Windows Defender Firewall may display an alert: *"Windows Defender Firewall has blocked some features of this app"*.
-   - **Check "Private networks, such as my home or work network"** and click **"Allow access"**.
-   - If blocked or missed:
-     1. Open **Windows Security** → **Firewall & network protection**.
-     2. Click **Allow an app through firewall**.
-     3. Find **Node.js: Server-side JavaScript** (or add `node.exe`).
-     4. Ensure the **Private** checkbox is checked and save.
-
-2. **Windows Mobile Hotspot (Recommended for Classrooms without Wi-Fi)**:
-   - Go to Windows **Settings** → **Network & internet** → **Mobile hotspot** → Toggle **On**.
-   - Connect your phone to this hotspot network.
-   - ClassMic automatically detects the Windows Hotspot adapter (`192.168.137.x`) and prioritizes it for your pairing QR code and URL.
-
----
-
-## Troubleshooting
-
-### 1. Windows Firewall
-- When starting Node.js for the first time, Windows Defender Firewall displays a prompt: **"Allow Node.js to communicate on Private networks"**. Make sure **Private networks** is checked and click **Allow access**.
-- If phones get connection timed out or refused, verify the firewall rule:
-  1. Open **Windows Security** → **Firewall & network protection** → **Allow an app through firewall**.
-  2. Click **Change settings**, find **Node.js: Server-side JavaScript**, and ensure **Private** is checked.
-  3. Alternatively, open PowerShell as Administrator and run:
+1. **Install `mkcert`** (one-time setup on your laptop):
+   - **Windows (PowerShell)**:
      ```powershell
-     netsh advfirewall firewall add rule name="ClassMic Port 3000" dir=in action=allow protocol=TCP localport=3000
+     winget install FiloSottile.mkcert
+     # or: choco install mkcert
+     ```
+   - **macOS**:
+     ```bash
+     brew install mkcert
+     ```
+   - **Linux**:
+     ```bash
+     sudo apt install libnss3-tools && brew install mkcert
      ```
 
-### 2. Same Wi-Fi Network & Router "Client Isolation"
-- **Same Network**: Verify that Phone 1, Phone 2, and the Laptop are connected to the exact same Wi-Fi SSID.
-- **Client / AP Isolation**: School, university, or public Wi-Fi networks often enable "Client Isolation" or "Guest Mode" which blocks phones from talking to other devices on the same network.
-  - **Solution**: If your school Wi-Fi has Client Isolation, turn on **Windows Mobile Hotspot** on your laptop and connect all phones directly to your laptop's hotspot.
-
-### 3. Windows Mobile Hotspot (Recommended)
-- Go to Windows **Settings** → **Network & internet** → **Mobile hotspot** → Toggle **On**.
-- Connect all phones to the laptop's hotspot network.
-- Windows Mobile Hotspot assigns the laptop an address (typically `192.168.137.1`).
-- ClassMic automatically detects the hotspot adapter and updates the **Laptop Network IP** and **Phone URL**.
-- Click **[ Refresh Network ]** on the Laptop Receiver screen if you enabled Hotspot after starting ClassMic.
-
-### 4. How to Check `ipconfig` on Windows
-If you want to manually verify your laptop's network IP:
-1. Press `Win + R`, type `cmd`, and press Enter.
-2. Type:
-   ```cmd
-   ipconfig
+2. **Generate Certificates for Your LAN IPs**:
+   ```bash
+   npm run cert
    ```
-3. Look for the active network adapter:
-   - **Wi-Fi**: Look for `Wireless LAN adapter Wi-Fi` → `IPv4 Address . . . : 192.168.x.x`
-   - **Hotspot**: Look for `Wireless LAN adapter Local Area Connection*` → `IPv4 Address . . . : 192.168.137.1`
-4. Confirm that this IPv4 address matches the **Laptop Network IP** shown on the ClassMic screen.
+   This command detects all local network interfaces and creates trusted certificates in `./certs/`.
 
-### 5. Other Common Checks
-- **Microphone blocked on phone**: Tap the lock/site settings icon in Safari/Chrome on your phone and set Microphone to **Allow**.
-- **Laptop audio silent**: Click the "Enable Audio" unlock button if the browser restricts autoplay. Ensure volume slider is turned up and mute is disabled.
-- **Refresh Network**: If you switched Wi-Fi networks or turned on Hotspot after launching the app, click the **[ Refresh Network ]** button on the Laptop Receiver page to immediately refresh the detected IP.
+3. **Install Root CA on Android Phone (for Chrome)**:
+   - Run `npm run cert` to display your `rootCA.pem` path.
+   - Transfer `rootCA.pem` to your Android device (via USB, email, or Google Drive).
+   - On Android: **Settings** → **Security** → **More security settings** → **Encryption & credentials** → **Install a certificate** → **CA certificate**.
+   - Select `rootCA.pem` and confirm. Chrome on Android will now trust your local HTTPS connection and allow full microphone streaming.
 
+> **Note for iOS (Safari)**: Safari on iOS allows microphone access over local IP addresses without requiring custom root certificates.
+
+---
+
+## 🎛️ Receiver Console & Multi-Mic Mixer Features
+
+The laptop receiver dashboard acts as a central audio control station:
+
+- **Independent Audio Channels**: Each connected mobile phone is automatically registered with a distinct name (e.g., `Phone 1`, `Phone 2`) and short identifier.
+- **Individual Channel Volume**: Adjust each microphone's gain from `0%` to `150%` to balance vocal levels between different speakers.
+- **Individual & Master Mute**: Mute individual speakers or mute the entire master output with a single click.
+- **Remote Mute & Disconnect**: Laptop operator can remotely mute or disconnect any phone directly from the console.
+- **Real-Time Spectrum Analyzer**: Visualizes incoming audio frequencies and output amplitude to monitor audio clarity.
+- **Autoplay Unblock Guard**: Built-in detection for browser autoplay policies with a one-click audio resume button.
+
+---
+
+## 📂 Project Structure
+
+```
+classmic/
+├── client/                      # Frontend Application (React 19 + Tailwind CSS)
+│   └── src/
+│       ├── components/          # Reusable UI & Audio Components
+│       │   ├── AudioLevelMeter.jsx   # Real-time microphone input volume meter
+│       │   ├── AudioVisualizer.jsx   # Multi-bar live audio output spectrum
+│       │   └── StatusBadge.jsx       # Connection status indicators
+│       ├── pages/               # Primary Route Views
+│       │   ├── HomePage.jsx          # Mode selector & routing introduction
+│       │   ├── PhoneMicPage.jsx      # Mobile transmitter interface & controls
+│       │   └── LaptopReceiverPage.jsx# Multi-channel receiver console & mixer
+│       ├── services/            # Client Networking
+│       │   └── socket.js             # Socket.IO client setup & event dispatching
+│       ├── webrtc/              # Low-Latency WebRTC & Web Audio Engines
+│       │   ├── audio.js              # Multi-channel Web Audio mixer & analyzers
+│       │   └── peer.js               # RTCPeerConnection lifecycle & SDP tuning
+│       ├── App.jsx              # App root, role routing & global navbar
+│       ├── main.jsx             # React entry point
+│       └── styles.css           # Global Tailwind CSS directives & theme styles
+├── server/                      # Backend Service (Node.js + Express + Socket.IO)
+│   └── src/
+│       ├── server.js            # Express server, HTTPS/HTTP setup & LAN IP discovery
+│       └── signaling.js         # WebRTC room management & multi-phone signaling
+├── scripts/
+│   └── generate-cert.js         # Automated mkcert SSL certificate generator
+├── certs/                       # Generated local SSL certificates (optional)
+├── public/                      # Static assets & icons
+├── index.html                   # HTML entry point with metadata
+├── vite.config.js               # Vite bundler configuration
+├── package.json                 # Project dependencies and npm scripts
+└── metadata.json                # Application metadata and runtime permissions
+```
+
+---
+
+## 🔬 Technical Implementation
+
+### WebRTC Low-Latency Voice Optimization
+- **Offline ICE Gathering**: Configured with `iceServers: []` to eliminate delays associated with external STUN servers when offline. WebRTC gathers LAN host candidates immediately.
+- **Opus SDP Packetization**: Modifies SDP parameters to set `ptime=10` (10ms audio packets), `stereo=0` (mono speech), and `maxaveragebitrate=64000` for crisp vocal transmission with minimal network latency.
+- **MediaStream Constraints**: Disables software echo cancellation and aggressive noise suppression algorithms to bypass software DSP processing lag when outputting to PA speakers.
+
+### Web Audio API Multi-Phone Mixer
+- The receiver maintains a dedicated `AudioContext` and dynamically connects each phone's `MediaStream` to an individual `GainNode` and `AnalyserNode`.
+- All channels merge into a central master `GainNode` feeding the destination speaker output while calculating real-time FFT spectrum data.
+
+---
+
+## 🔧 Troubleshooting & Tips
+
+### 1. Windows Defender Firewall
+When running Node.js for the first time, Windows may display a firewall prompt:
+- Check **"Private networks, such as my home or work network"** and click **"Allow access"**.
+- If connection times out from mobile devices, ensure port `3000` is permitted:
+  ```powershell
+  netsh advfirewall firewall add rule name="CLASSMIC Port 3000" dir=in action=allow protocol=TCP localport=3000
+  ```
+
+### 2. Client / AP Isolation on School Wi-Fi
+School and corporate Wi-Fi networks often prevent wireless devices from talking directly to one another.
+- **Symptom**: Phone connects to the URL, but audio does not stream or WebRTC fails to connect.
+- **Fix**: Turn on **Mobile Hotspot** on the laptop and connect all phones to the hotspot Wi-Fi.
+
+### 3. Port Conflict (Port 3000 in Use)
+If another application is using port 3000:
+- **Windows**:
+  ```cmd
+  netstat -ano | findstr :3000
+  taskkill /F /PID <PID>
+  ```
+- Or run CLASSMIC on a custom port:
+  ```bash
+  PORT=3005 npm run dev
+  ```
+
+### 4. Browser Audio Autoplay Policy
+Modern browsers prevent web pages from playing audio without user interaction.
+- If the receiver shows connected phones speaking but no sound comes from the laptop speakers, click the **"Unblock Audio"** banner displayed at the top of the Receiver Console.
+
+---
+
+## 📜 Available Scripts
+
+| Command | Description |
+| :--- | :--- |
+| `npm run dev` | Starts the Express server and Vite development server on port 3000 |
+| `npm run build` | Compiles production assets into the `/dist` directory |
+| `npm run start` | Runs the production server using compiled static assets |
+| `npm run cert` | Generates local HTTPS SSL certificates for detected LAN IPs via `mkcert` |
+| `npm run lint` | Runs project linting and syntax validation |
+| `npm run clean` | Removes compiled build artifacts |
+
+---
+
+## 📄 License
+This project is open-source and available under the [MIT License](LICENSE).
